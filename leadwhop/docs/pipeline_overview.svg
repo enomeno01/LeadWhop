@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="780" viewBox="0 0 1300 780" font-family="ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <!-- background -->
+  <rect width="1300" height="780" fill="#FAFAF8"/>
+
+  <!-- title -->
+  <text x="650" y="52" text-anchor="middle" font-size="27" font-weight="700" fill="#1C2B33">How it works</text>
+  <text x="650" y="78" text-anchor="middle" font-size="14.5" fill="#5B6B73">One click: a plain company list goes in, CRM-ready qualified leads come out.</text>
+
+  <!-- ================= LEFT: YOU PROVIDE ================= -->
+  <rect x="42" y="120" width="320" height="560" rx="14" fill="#FFFFFF" stroke="#D8DEE2" stroke-width="1.5"/>
+  <rect x="42" y="120" width="320" height="46" rx="14" fill="#124E63"/>
+  <rect x="42" y="152" width="320" height="14" fill="#124E63"/>
+  <text x="202" y="150" text-anchor="middle" font-size="15.5" font-weight="700" fill="#FFFFFF" letter-spacing="1.5">YOU PROVIDE</text>
+
+  <text x="66" y="200" font-size="14" font-weight="700" fill="#124E63">1 · Excel file</text>
+  <text x="80" y="226" font-size="13" fill="#31424B">• Company name <tspan font-weight="700">(required)</tspan></text>
+  <text x="80" y="248" font-size="13" fill="#31424B">• Country <tspan fill="#7A868C">(recommended)</tspan></text>
+  <text x="80" y="270" font-size="13" fill="#31424B">• Website <tspan fill="#7A868C">(optional — if present,</tspan></text>
+  <text x="92" y="289" font-size="13" fill="#7A868C">search is skipped, money saved)</text>
+
+  <text x="66" y="330" font-size="14" font-weight="700" fill="#124E63">2 · API keys</text>
+  <text x="80" y="356" font-size="13" fill="#31424B">• OpenAI <tspan fill="#7A868C">(AI decisions)</tspan></text>
+  <text x="80" y="378" font-size="13" fill="#31424B">• Serper.dev <tspan fill="#7A868C">(Google search)</tspan></text>
+  <text x="80" y="400" font-size="13" fill="#31424B">• Lusha <tspan fill="#7A868C">(contacts — stages 3-4 only)</tspan></text>
+
+  <text x="66" y="441" font-size="14" font-weight="700" fill="#124E63">3 · Event name</text>
+  <text x="80" y="467" font-size="13" fill="#31424B">e.g. "PLMA 2026" <tspan fill="#7A868C">(CRM export only)</tspan></text>
+
+  <rect x="66" y="500" width="272" height="150" rx="10" fill="#F0F5F3"/>
+  <text x="82" y="528" font-size="13" font-weight="700" fill="#124E63">That's all.</text>
+  <text x="82" y="551" font-size="12.5" fill="#41525B">No stage requires babysitting.</text>
+  <text x="82" y="571" font-size="12.5" fill="#41525B">Crashed run? It resumes from the</text>
+  <text x="82" y="591" font-size="12.5" fill="#41525B">last checkpoint. Duplicate titles</text>
+  <text x="82" y="611" font-size="12.5" fill="#41525B">and re-runs cost zero tokens</text>
+  <text x="82" y="631" font-size="12.5" fill="#41525B">thanks to the on-disk cache.</text>
+
+  <!-- arrow input -> pipeline -->
+  <path d="M 366 400 L 416 400" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- ================= CENTER: PIPELINE ================= -->
+  <text x="650" y="112" text-anchor="middle" font-size="13" font-weight="700" fill="#7A868C" letter-spacing="2">WHAT RUNS BEHIND THE SCENES</text>
+
+  <!-- stage 1 -->
+  <rect x="425" y="128" width="450" height="92" rx="12" fill="#FFFFFF" stroke="#124E63" stroke-width="1.5"/>
+  <circle cx="457" cy="174" r="17" fill="#124E63"/>
+  <text x="457" y="180" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF">1</text>
+  <text x="487" y="160" font-size="14.5" font-weight="700" fill="#1C2B33">Find the official website</text>
+  <text x="487" y="182" font-size="12.5" fill="#5B6B73">Google search → AI picks the real site. Uncertain picks are</text>
+  <text x="487" y="200" font-size="12.5" fill="#5B6B73">verified by actually visiting the page. Wrong domains rejected.</text>
+
+  <path d="M 650 220 L 650 244" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- stage 2 -->
+  <rect x="425" y="248" width="450" height="92" rx="12" fill="#FFFFFF" stroke="#124E63" stroke-width="1.5"/>
+  <circle cx="457" cy="294" r="17" fill="#124E63"/>
+  <text x="457" y="300" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF">2</text>
+  <text x="487" y="280" font-size="14.5" font-weight="700" fill="#1C2B33">Qualify against your ICP</text>
+  <text x="487" y="302" font-size="12.5" fill="#5B6B73">AI researches each company: is it a manufacturer? do its products</text>
+  <text x="487" y="320" font-size="12.5" fill="#5B6B73">fit your offering? Writes a one-line note reused downstream.</text>
+
+  <path d="M 650 340 L 650 364" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- stage 3 -->
+  <rect x="425" y="368" width="450" height="92" rx="12" fill="#FFFFFF" stroke="#124E63" stroke-width="1.5"/>
+  <circle cx="457" cy="414" r="17" fill="#124E63"/>
+  <text x="457" y="420" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="487" y="400" font-size="14.5" font-weight="700" fill="#1C2B33">Find decision-makers</text>
+  <text x="487" y="422" font-size="12.5" fill="#5B6B73">Buyers &amp; procurement first (Tier 1), execs as fallback (Tier 2).</text>
+  <text x="487" y="440" font-size="12.5" fill="#5B6B73">Domain search first; name search only behind a fuzzy-match guard.</text>
+
+  <path d="M 650 460 L 650 484" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- stage 4 -->
+  <rect x="425" y="488" width="450" height="80" rx="12" fill="#FFFFFF" stroke="#9FB4BC" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <circle cx="457" cy="528" r="17" fill="#9FB4BC"/>
+  <text x="457" y="534" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF">4</text>
+  <text x="487" y="518" font-size="14.5" font-weight="700" fill="#1C2B33">Add phone numbers <tspan font-size="12" fill="#7A868C" font-weight="400">(optional)</tspan></text>
+  <text x="487" y="540" font-size="12.5" fill="#5B6B73">Looks each person up by email — no credits wasted re-buying</text>
+  <text x="487" y="558" font-size="12.5" fill="#5B6B73">data you already have.</text>
+
+  <path d="M 650 568 L 650 592" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- stage 5 -->
+  <rect x="425" y="596" width="450" height="84" rx="12" fill="#FFFFFF" stroke="#124E63" stroke-width="1.5"/>
+  <circle cx="457" cy="638" r="17" fill="#124E63"/>
+  <text x="457" y="644" text-anchor="middle" font-size="15" font-weight="700" fill="#FFFFFF">5</text>
+  <text x="487" y="626" font-size="14.5" font-weight="700" fill="#1C2B33">Export for your CRM</text>
+  <text x="487" y="648" font-size="12.5" fill="#5B6B73">Classifies function, industry &amp; seniority (rules first, AI for the</text>
+  <text x="487" y="666" font-size="12.5" fill="#5B6B73">rest) and maps everything to your Salesforce IDs.</text>
+
+  <!-- arrow pipeline -> output -->
+  <path d="M 879 400 L 929 400" stroke="#124E63" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- ================= RIGHT: YOU GET ================= -->
+  <rect x="938" y="120" width="320" height="560" rx="14" fill="#FFFFFF" stroke="#D8DEE2" stroke-width="1.5"/>
+  <rect x="938" y="120" width="320" height="46" rx="14" fill="#1E6E52"/>
+  <rect x="938" y="152" width="320" height="14" fill="#1E6E52"/>
+  <text x="1098" y="150" text-anchor="middle" font-size="15.5" font-weight="700" fill="#FFFFFF" letter-spacing="1.5">YOU GET</text>
+
+  <text x="962" y="198" font-size="14" font-weight="700" fill="#1E6E52">Excel + CRM-ready CSV, per lead:</text>
+
+  <text x="972" y="230" font-size="13" fill="#31424B">• Official website <tspan fill="#7A868C">+ confidence level</tspan></text>
+  <text x="972" y="256" font-size="13" fill="#31424B">• ICP fit verdict <tspan fill="#7A868C">+ one-line AI note</tspan></text>
+  <text x="972" y="282" font-size="13" fill="#31424B">• Contact: name, title, <tspan font-weight="700">verified email</tspan></text>
+  <text x="972" y="308" font-size="13" fill="#31424B">• Which tier matched <tspan fill="#7A868C">(buyer vs exec)</tspan></text>
+  <text x="972" y="334" font-size="13" fill="#31424B">• Phone numbers <tspan fill="#7A868C">(if stage 4 ran)</tspan></text>
+  <text x="972" y="360" font-size="13" fill="#31424B">• Salesforce columns: country &amp;</text>
+  <text x="984" y="379" font-size="13" fill="#31424B">territory IDs, function, industry,</text>
+  <text x="984" y="398" font-size="13" fill="#31424B">seniority, record type, event name</text>
+
+  <rect x="962" y="424" width="272" height="140" rx="10" fill="#EFF6F2"/>
+  <text x="978" y="452" font-size="13" font-weight="700" fill="#1E6E52">Full audit trail</text>
+  <text x="978" y="475" font-size="12.5" fill="#41525B">Every row tells you how it was</text>
+  <text x="978" y="495" font-size="12.5" fill="#41525B">found (domain vs fuzzy name match)</text>
+  <text x="978" y="515" font-size="12.5" fill="#41525B">and a <tspan font-weight="700">Needs_Review</tspan> flag marks the</text>
+  <text x="978" y="535" font-size="12.5" fill="#41525B">few rows worth a human glance —</text>
+  <text x="978" y="555" font-size="12.5" fill="#41525B">trust the rest.</text>
+
+  <text x="962" y="600" font-size="13" font-weight="700" fill="#1E6E52">Nothing is silently wrong:</text>
+  <text x="962" y="622" font-size="12.5" fill="#41525B">unmatched companies stay in the file,</text>
+  <text x="962" y="641" font-size="12.5" fill="#41525B">clearly marked — so you always know</text>
+  <text x="962" y="660" font-size="12.5" fill="#41525B">what was found <tspan font-style="italic">and</tspan> what wasn't.</text>
+
+  <!-- footer -->
+  <text x="650" y="742" text-anchor="middle" font-size="12.5" fill="#7A868C">Typical cost on 1,000 companies: a few dollars of search + AI — the pipeline qualifies and filters before spending enrichment credits.</text>
+
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="#124E63"/>
+    </marker>
+  </defs>
+</svg>

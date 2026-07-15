@@ -1,0 +1,54 @@
+# EXAMPLE CRM mapping. Copy to crm_mapping.yaml and replace every ID with
+# the record/picklist IDs from YOUR Salesforce org.
+# crm_mapping.yaml is gitignored by default if it contains real org IDs —
+# add it to .gitignore yourself if needed.
+
+record_type_id: "012XXXXXXXXXXXXXXX"
+
+business_functions:
+  "Strategy and Corporate Management": "a38XXXXXXXXXXXX001"
+  "Procurement (Purchasing)":          "a38XXXXXXXXXXXX002"
+  "Sales":                             "a38XXXXXXXXXXXX003"
+  "Marketing":                         "a38XXXXXXXXXXXX004"
+  "Production (Manufacturing)":        "a38XXXXXXXXXXXX005"
+  "Warehouse & Logistics":             "a38XXXXXXXXXXXX006"
+  "Finance":                           "a38XXXXXXXXXXXX007"
+  "Information Technologies (IT)":     "a38XXXXXXXXXXXX008"
+  "Human Resources (HR)":              "a38XXXXXXXXXXXX009"
+  "Business Development":              "a38XXXXXXXXXXXX010"
+
+industries:
+  "Food & Beverage":               "a4CXXXXXXXXXXXX001"
+  "Non-Food Related Manufacturing": "a4CXXXXXXXXXXXX002"
+
+sub_industries:
+  "Manufacture of spirits":                 "a31XXXXXXXXXXXX001"
+  "Manufacture of wine":                    "a31XXXXXXXXXXXX002"
+  "Manufacture of beer":                    "a31XXXXXXXXXXXX003"
+  "Manufacture of dairy products":          "a31XXXXXXXXXXXX004"
+  "Manufacture of non-alcoholic beverages": "a31XXXXXXXXXXXX005"
+  "Manufacture of other food products":     "a31XXXXXXXXXXXX006"
+  "Perfumery & Cosmetics":                  "a31XXXXXXXXXXXX007"
+  "Other Manufacturing":                    "a31XXXXXXXXXXXX008"
+
+territories:
+  domestic: "a2tXXXXXXXXXXXX001"   # e.g. home-market territory
+  export:   "a2tXXXXXXXXXXXX002"
+
+home_country: "Turkey"
+
+# Country name -> Salesforce country record ID.
+# Fill with your org's values; two examples shown.
+countries:
+  "Turkey":                   "a2yXXXXXXXXXXXX001"
+  "United States of America": "a2yXXXXXXXXXXXX002"
+
+# Common aliases normalized before country lookup
+country_aliases:
+  usa: "United States of America"
+  us: "United States of America"
+  "united states": "United States of America"
+  uk: "United Kingdom"
+  uae: "United Arab Emirates"
+  turkiye: "Turkey"
+  "türkiye": "Turkey"
