@@ -78,9 +78,11 @@ st.markdown("""
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("docs/linkedin_visual.svg", use_column_width=True)
+    import pathlib as _pl
+    _img = _pl.Path(__file__).parent / "docs" / "linkedin_visual.svg"
+    if _img.exists():
+        st.image(str(_img), use_container_width=True)
     st.divider()
-
     # API keys — only shown when not already injected from Secrets
     missing = [k for k in ("OPENAI_API_KEY", "SERPER_API_KEY", "LUSHA_API_KEY")
                if not os.environ.get(k)]
