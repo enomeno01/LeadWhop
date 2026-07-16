@@ -41,15 +41,17 @@ class Pipeline:
 
     @classmethod
     def from_config(cls, settings_path: str = "config/settings.yaml") -> "Pipeline":
-        base = Path(settings_path).parent
-        settings = yaml.safe_load(Path(settings_path).read_text(encoding="utf-8"))
+        # Resolve relative to this file so it works on Streamlit Cloud too
+        root = Path(__file__).parent.parent
+        settings_file = root / settings_path
+        base = settings_file.parent
+        settings = yaml.safe_load(settings_file.read_text(encoding="utf-8"))
         tiers = yaml.safe_load((base / "tiers.yaml").read_text(encoding="utf-8"))
         mapping_file = base / "crm_mapping.yaml"
         if not mapping_file.exists():
             mapping_file = base / "crm_mapping.example.yaml"
         mapping = yaml.safe_load(mapping_file.read_text(encoding="utf-8"))
         return cls(settings, tiers, mapping)
-
     # ------------------------------------------------------------------
 
     def _checkpoint(self, df: pd.DataFrame, name: str) -> None:
