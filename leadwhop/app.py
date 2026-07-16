@@ -195,9 +195,8 @@ if uploaded:
             total    = len(result)
             reviewed = int(result["Needs_Review"].sum()) if "Needs_Review" in result.columns else 0
             verified = total - reviewed
-            with_email = int(result["Email"].notna().sum() & (result["Email"] != "")) \
-                if "Email" in result.columns else "-"
-
+            with_email = int((result["Email"].notna() & (result["Email"] != "")).sum()) \
+                if "Email" in result.columns else 0
             m1, m2, m3, m4 = st.columns(4)
             m1.markdown(f'<div class="metric-card"><div class="value">{total}</div>'
                         f'<div class="label">Total rows</div></div>', unsafe_allow_html=True)
