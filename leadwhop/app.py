@@ -78,10 +78,6 @@ st.markdown("""
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    import pathlib as _pl
-    _img = _pl.Path(__file__).parent / "docs" / "linkedin_visual.svg"
-    if _img.exists():
-        st.image(str(_img), use_container_width=True)
     st.divider()
 
     # API keys — only shown when not already injected from Secrets
