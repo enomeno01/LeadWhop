@@ -1,8 +1,0 @@
-pandas
-openpyxl
-requests
-openai
-streamlit
-python-dotenv
-PyYAML
-beautifulsoup4
