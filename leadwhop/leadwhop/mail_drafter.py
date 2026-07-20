@@ -110,10 +110,17 @@ class MailDrafter:
 
     def draft(self, row: dict, custom_instructions: str = "") -> tuple[str, str]:
         """Return (subject, body) for one lead row."""
-        name    = str(row.get("Name") or row.get("FirstName") or "").strip()
-        # Accept "Company Name" (with space) as well as "Company" and "AI Note"
-        company = str(row.get("Company") or row.get("Company Name") or "").strip()
-        ai_note = str(row.get("AI_Note") or row.get("AI Note") or "").strip()
+        # Try specific keys in priority order — check for non-empty strings explicitly
+        def _get(*keys) -> str:
+            for k in keys:
+                v = row.get(k)
+                if v and str(v).strip() not in ("", "nan", "None", "-"):
+                    return str(v).strip()
+            return ""
+
+        name    = _get("Name", "FirstName")
+        company = _get("Company Name", "Company")   # "Company Name" first — avoids picking up person name stored in "Company"
+        ai_note = _get("AI Note", "AI_Note")
 
         has_name    = not self._empty(name)
         has_company = not self._empty(company)
