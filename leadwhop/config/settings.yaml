@@ -1,0 +1,140 @@
+# LeadWhop settings — safe to commit (no secrets here).
+
+models:
+  llm: gpt-4o-mini
+  temperature: 0.0
+
+search:
+  serper_url: https://google.serper.dev/search
+  results_count: 5
+  gl: us
+  hl: en
+
+rate_limits:
+  sleep_between_calls: 0.5
+  sleep_between_companies: 1.5
+  sleep_between_tiers: 1.0
+  sleep_before_enrich: 1.0
+  max_retries: 3
+
+pipeline:
+  checkpoint_every: 5
+  cache_dir: .cache
+  output_dir: outputs
+  max_contacts_per_company: 2
+
+# --- ICP qualification ---
+icp:
+  question: >
+    Is this company a manufacturer, and are its products typically packaged
+    or consumed in GLASS containers (bottles, jars)?
+  positive_label: "Yes"
+  negative_label: "No"
+  note_instruction: >
+    In one short English sentence, state what the company makes and which of
+    its products could use glass packaging.
+
+# --- Website verification ---
+verification:
+  fetch_timeout: 10
+  fuzzy_threshold: 0.6
+
+# Domains that are NEVER a company's official website
+domain_blacklist:
+  # Social
+  - linkedin.com
+  - facebook.com
+  - instagram.com
+  - x.com
+  - twitter.com
+  - youtube.com
+  - tiktok.com
+  # Databases / lead tools
+  - wikipedia.org
+  - wikidata.org
+  - crunchbase.com
+  - zoominfo.com
+  - apollo.io
+  - rocketreach.co
+  - dnb.com
+  - dandb.com
+  - opencorporates.com
+  - bloomberg.com
+  - reuters.com
+  - forbes.com
+  - pitchbook.com
+  - tracxn.com
+  - craft.co
+  - owler.com
+  - datanyze.com
+  - signalhire.com
+  - lusha.com
+  - seamless.ai
+  - wiza.co
+  - leadiq.com
+  # Review / directory
+  - yelp.com
+  - tripadvisor.com
+  - glassdoor.com
+  - indeed.com
+  - bbb.org
+  - mapquest.com
+  - google.com
+  - yellowpages.com
+  - manta.com
+  - bizapedia.com
+  - corporationwiki.com
+  - buzzfile.com
+  - eventective.com
+  # News / industry media
+  - distillery.news
+  - distillerytrail.com
+  - craftspiritsmag.com
+  - bevnet.com
+  - breakingbourbon.com
+  - whiskybase.com
+  # Retail / marketplace
+  - amazon.com
+  - alibaba.com
+  - made-in-china.com
+  - globalsources.com
+  - exporthub.com
+  - tradewheel.com
+  - go4worldbusiness.com
+  - wine-searcher.com
+  - totalwine.com
+  - drizly.com
+  - find-and-update.company-information.service.gov.uk
+
+
+# --- Country -> TLD map for Lusha domain variant search -------------------
+# When the found domain yields no Lusha results, TLD variants are tried
+# BEFORE falling back to name search: original -> .com -> country TLD.
+# Searches are free on Lusha (only enrich costs credits), so trying
+# variants is pure upside.
+country_tlds:
+  germany: de
+  france: fr
+  italy: it
+  spain: es
+  netherlands: nl
+  greece: gr
+  portugal: pt
+  austria: at
+  switzerland: ch
+  belgium: be
+  ireland: ie
+  poland: pl
+  sweden: se
+  denmark: dk
+  norway: "no"
+  finland: fi
+  turkey: com.tr
+  "united kingdom": co.uk
+  "united states": com
+  canada: ca
+  australia: com.au
+  japan: co.jp
+  china: com.cn
+  brazil: com.br
+  mexico: com.mx
