@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200" font-family="ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <!-- background -->
+  <rect width="1200" height="1200" fill="#0D3B44"/>
+
+  <!-- eyebrow -->
+  <text x="600" y="120" text-anchor="middle" font-size="22" font-weight="700" fill="#F2B33D" letter-spacing="6">LEADWHOP</text>
+
+  <!-- headline -->
+  <text x="600" y="205" text-anchor="middle" font-size="54" font-weight="800" fill="#FFFFFF">A company list goes in.</text>
+  <text x="600" y="272" text-anchor="middle" font-size="54" font-weight="800" fill="#F2B33D">Qualified leads come out.</text>
+
+  <!-- input chip -->
+  <!-- input chip -->
+  <text x="600" y="320" text-anchor="middle" font-size="16" font-weight="700" fill="#9CC3CB" letter-spacing="3">YOUR INPUT</text>
+  <rect x="220" y="332" width="760" height="72" rx="36" fill="#FFFFFF"/>
+  <text x="600" y="362" text-anchor="middle" font-size="22" font-weight="700" fill="#0D3B44">Company Names</text>
+  <text x="600" y="388" text-anchor="middle" font-size="15" fill="#6B8A92">Country &amp; Website — optional</text>
+
+  <!-- chevron -->
+  <path d="M 585 412 L 600 428 L 615 412" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- step 1 -->
+  <rect x="360" y="448" width="480" height="72" rx="36" fill="#124E5B" stroke="#1E6674" stroke-width="1.5"/>
+  <circle cx="408" cy="484" r="22" fill="#F2B33D"/>
+  <text x="408" y="493" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">1</text>
+  <text x="452" y="494" font-size="27" font-weight="600" fill="#FFFFFF">Find the website</text>
+
+  <path d="M 585 538 L 600 554 L 615 538" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- step 2 -->
+  <rect x="360" y="574" width="480" height="72" rx="36" fill="#124E5B" stroke="#1E6674" stroke-width="1.5"/>
+  <circle cx="408" cy="610" r="22" fill="#F2B33D"/>
+  <text x="408" y="619" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">2</text>
+  <text x="452" y="608" font-size="27" font-weight="600" fill="#FFFFFF">Check product fit</text>
+
+
+  <path d="M 585 664 L 600 680 L 615 664" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- step 3 -->
+  <rect x="360" y="700" width="480" height="72" rx="36" fill="#124E5B" stroke="#1E6674" stroke-width="1.5"/>
+  <circle cx="408" cy="736" r="22" fill="#F2B33D"/>
+  <text x="408" y="745" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">3</text>
+  <text x="452" y="746" font-size="27" font-weight="600" fill="#FFFFFF">Find the buyers</text>
+
+  <path d="M 585 790 L 600 806 L 615 790" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- step 4 -->
+  <rect x="360" y="826" width="480" height="72" rx="36" fill="#124E5B" stroke="#1E6674" stroke-width="1.5"/>
+  <circle cx="408" cy="862" r="22" fill="#F2B33D"/>
+  <text x="408" y="871" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">4</text>
+  <text x="452" y="872" font-size="27" font-weight="600" fill="#FFFFFF">Verify emails &amp; phones</text>
+
+  <path d="M 585 916 L 600 932 L 615 916" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- step 5 -->
+  <rect x="360" y="952" width="480" height="72" rx="36" fill="#124E5B" stroke="#1E6674" stroke-width="1.5"/>
+  <circle cx="408" cy="988" r="22" fill="#F2B33D"/>
+  <text x="408" y="997" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">5</text>
+  <text x="452" y="998" font-size="27" font-weight="600" fill="#FFFFFF">Export to your CRM</text>
+
+  <path d="M 585 1042 L 600 1058 L 615 1042" stroke="#F2B33D" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- output chip -->
+  <rect x="285" y="1076" width="630" height="64" rx="32" fill="#F2B33D"/>
+  <text x="600" y="1117" text-anchor="middle" font-size="24" font-weight="800" fill="#0D3B44">Name · Title · Verified email · CRM-ready</text>
+
+  <!-- footer -->
+  <text x="600" y="1176" text-anchor="middle" font-size="19" fill="#8FB4BC" letter-spacing="1">One click · Fully automated · Every row auditable</text>
+</svg>
