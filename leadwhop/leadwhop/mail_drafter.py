@@ -110,38 +110,42 @@ class MailDrafter:
 
     def draft(self, row: dict, custom_instructions: str = "") -> tuple[str, str]:
         """Return (subject, body) for one lead row."""
-        # Try specific keys in priority order — check for non-empty strings explicitly
+        # Normalise all keys: strip whitespace, lowercase → maps to original value.
+        # This makes column lookup robust to " Name ", "NAME", "Name\u200b", etc.
+        norm = {}
+        for k, v in row.items():
+            key = str(k).strip().lower().replace("_", " ")
+            norm[key] = v
+
         def _get(*keys) -> str:
             for k in keys:
-                v = row.get(k)
-                if v and str(v).strip() not in ("", "nan", "None", "-"):
+                v = norm.get(k.strip().lower().replace("_", " "))
+                if v is not None and str(v).strip() not in ("", "nan", "None", "-"):
                     return str(v).strip()
             return ""
 
-        # Company name: prefer the dedicated "Company Name" column
-        company = _get("Company Name")
+        # Company: dedicated "company name" first, then bare "company"
+        company_name = _get("company name")
+        bare_company = _get("company")
 
-        # Person name: try "Name"/"FirstName" first. If absent, the pipeline
-        # sometimes stores the PERSON name in a bare "Company" column while the
-        # real company sits in "Company Name" — so fall back to "Company" only
-        # when it differs from the resolved company name.
-        name = _get("Name", "FirstName")
-        if not name:
-            bare = _get("Company")
-            if bare and bare != company:
-                name = bare
-        # Last resort: if still no company, use bare "Company"
-        if not company:
-            company = _get("Company")
+        # Person name: "name" / "first name" / "full name" / "contact"
+        name = _get("name", "first name", "fullname", "full name", "contact", "contact name")
 
-        ai_note = _get("AI Note", "AI_Note")
+        # If no name column but a bare "company" holds a PERSON name
+        # (different from the real company), use it as the name.
+        if not name and bare_company and bare_company != company_name:
+            name = bare_company
+
+        company = company_name or bare_company
+        ai_note = _get("ai note", "ainote")
 
         has_name    = not self._empty(name)
         has_company = not self._empty(company)
         has_note    = not self._empty(ai_note)
 
         # Salutation
-        salutation = name.split()[0] if has_name else "Team"
+        # Use ONLY the first word of the name for the salutation
+        salutation = name.strip().split()[0] if has_name and name.strip() else "Team"
 
         # Intro line
         if has_company:
@@ -193,9 +197,15 @@ class MailDrafter:
         subjects, drafts = [], []
         total = 0
         for _, row in df.iterrows():
-            email = str(row.get("Email") or "").strip()
+            rd = row.to_dict()
+            # email lookup robust to casing/spacing
+            email = ""
+            for k, v in rd.items():
+                if str(k).strip().lower() == "email" and v is not None:
+                    email = str(v).strip()
+                    break
             if email and email not in ("nan", "-") and "@" in email:
-                subject, body = self.draft(row.to_dict(), custom_instructions=custom_instructions)
+                subject, body = self.draft(rd, custom_instructions=custom_instructions)
                 subjects.append(subject)
                 drafts.append(body)
                 total += 1
