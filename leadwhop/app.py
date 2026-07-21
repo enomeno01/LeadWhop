@@ -207,6 +207,11 @@ if uploaded:
                                   custom_mail_prompt=custom_mail_prompt)
                 progress.progress(1.0, text="✅ Done")
                 status.success("Pipeline complete!")
+
+                # Hide internal debug columns from the user-facing output
+                _hidden = ["Website_Debug"]
+                result = result.drop(columns=[c for c in _hidden
+                                              if c in result.columns])
             except Exception as exc:
                 st.error(f"Pipeline error: {exc}")
                 for w in lw_status.get_warnings():
@@ -325,5 +330,3 @@ if uploaded:
                         file_name="leadwhop_mail_drafts.xlsx",
                         width="stretch",
                     )
-
-
