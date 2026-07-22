@@ -75,16 +75,24 @@ class Qualifier:
 
     def _product_snippets(self, company: str, country: str,
                           website: str = "") -> str:
+        from .utils import clean_domain
         country_en = self._english_country(country)
-        organic = self._search(f'"{company}" {country_en} products OR catalog'.strip())
+        domain = clean_domain(website) if website else ""
 
-        # Second chance: a quoted name + "products OR catalog" returns nothing
-        # for many small producers. Retry with a plain query, preferring the
-        # company's own site when we already know the domain.
+        # Search the DOMAIN first whenever we know it. The Company Name column
+        # is frequently a retail banner, a private label, a holding company or
+        # a parent brand ("Hacendado (Mercadona)"), which pulls back snippets
+        # about the wrong business. The domain names exactly one operating
+        # company, so it produces far better grounded evidence.
+        if domain:
+            primary  = f"{domain} products OR catalog"
+            fallback = f'"{company}" {country_en} products'.strip()
+        else:
+            primary  = f'"{company}" {country_en} products OR catalog'.strip()
+            fallback = f"{company} {country_en}".strip()
+
+        organic = self._search(primary)
         if not organic:
-            from .utils import clean_domain
-            domain = clean_domain(website) if website else ""
-            fallback = f"{domain} products" if domain else f"{company} {country_en}".strip()
             try:
                 organic = self._search(fallback)
             except requests.RequestException:
@@ -166,7 +174,9 @@ Typical Yes categories include:
   cooking sauces, pasta sauce, pesto, dressings, marinades and salsa
 - Jams, honey, marmalade, fruit preserves, sweet spreads, nut butters and
   dessert toppings
-- Pickles, olives, fermented vegetables, antipasti and preserved foods
+- Pickles, olives, capers, fermented vegetables, antipasti and preserved foods
+- Canned, jarred, bottled or otherwise preserved vegetables, legumes, pulses,
+  tomatoes, passata, sweetcorn, artichokes, mushrooms, fruit and compotes
 - Olive oil, edible oils, vinegar, lemon juice, extracts and liquid seasonings
 - Jarred ready foods such as purees, soups, baby food, pâté, spreads, legumes
   and premium preserved products
@@ -176,19 +186,40 @@ Typical Yes categories include:
 Do not require the word "glass" to appear. Infer potential from the product
 category, packaging evidence and business activity.
 
+PROCESS IS NOT PACKAGING
+
+The words "canned", "cannery", "conserve", "conserves", "conserven",
+"conservas", "preserved", "preserving", "appertised" and "shelf-stable"
+describe a PRESERVATION PROCESS, not a container. Companies described this way
+routinely sell the same product in both metal cans and glass jars, and glass is
+the premium format in this category.
+
+Never return "No" merely because a product is called "canned" or because the
+company is called a cannery or conserves producer. Treat these companies as
+"Yes" unless the snippets explicitly show that every relevant line is sold only
+in metal cans, cartons or pouches.
+
+The same applies to frozen ranges: a company selling both frozen and preserved
+products still qualifies through its preserved range.
+
 Set "GlassFit" to "No" when:
 
 - The company has no relevant food or beverage products suitable for glass
-- The company mainly produces products rarely packaged in glass, such as
-  frozen foods, raw meat, poultry, fresh seafood, fresh bakery, fresh produce,
-  chips, dry snacks, bulk grains or similar products
+- The company's ENTIRE relevant range is a format that is never glass, such as
+  exclusively frozen foods, raw meat, poultry, fresh seafood, fresh bakery,
+  fresh produce, crisps, dry snacks or bulk grains.
+  A company that also has a preserved, jarred, bottled or canned line does not
+  belong here — classify it as "Yes".
 - The company only resells finished products made and packaged by other
   companies and has no own-brand, filling, packing or packaging purchasing role
-- The company is a RETAILER: a supermarket, hypermarket, discount chain,
-  grocery store, convenience chain, food e-commerce site or any retail banner.
-  This applies EVEN IF the retailer sells private-label or own-brand products,
-  because the glass is bought by the co-packer that fills those products, not
-  by the retail chain. Retailers are always "No".
+- The company is itself a RETAILER: a supermarket, hypermarket, discount
+  chain, grocery store, convenience chain, food e-commerce site or retail
+  banner, AND the website confirms a retail operation.
+  This applies even when the retailer sells private-label products, because
+  the glass is bought by the co-packer that fills them, not by the chain.
+  IMPORTANT EXCEPTION: if the Company Name mentions a retailer or a private
+  label but the WEBSITE belongs to a food or beverage PRODUCER, the producer
+  is the real subject of this row. Classify the producer, not the retailer.
 - The company mainly sells machinery, logistics, packaging materials or services
 - The company manufactures empty glass bottles, jars or glass packaging itself
 - The company operates mainly in cosmetics, personal care, pharmaceuticals,
@@ -318,6 +349,26 @@ Evaluate:
 2. Whether it may purchase, specify, source or control empty glass packaging
 3. Whether it owns, fills, packs or manages brands using glass
 
+WEBSITE IS THE PRIMARY IDENTITY
+
+When a Website is supplied, it is the strongest evidence of what this row
+actually is, and it outranks the Company Name field.
+
+Company Name values are often messy: they may contain a retail banner, a
+private-label brand, a parent group, a holding company or a brand that is
+merely a customer of the real business. The website points at one specific
+operating company.
+
+Therefore:
+
+- If the website is a producer's own site (its own products, catalogue,
+  factory, farm, distillery, winery or cannery), classify that producer, even
+  when the Company Name suggests a supermarket, a brand or a holding.
+- Only classify the row as a retailer when the WEBSITE itself is a retail site.
+- Read the domain and the URL path as evidence: agrucapers, conservas,
+  conserven, distillery, winery, oleificio, cantina, /jams, /sauces,
+  /preserves, /our-products all indicate a producer.
+
 DECISION PRIORITY
 
 Apply the rules in this order:
@@ -371,6 +422,8 @@ Good examples:
 - "The company only resells finished beverages and shows no packaging purchasing role."
 - "The company manufactures glass bottles and is therefore a competitor rather than a buyer."
 - "The company is a supermarket chain and does not purchase empty glass packaging itself."
+- "The website belongs to a caper and pickled vegetable producer that packs in glass jars, despite the retail brand in the name."
+- "The company cans vegetables and pulses, a category routinely sold in glass jars."
 - "The company name and website indicate a preserved fruit and vegetable producer suited to glass jars."
 
 {additional_instructions}
