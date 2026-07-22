@@ -34,8 +34,32 @@ class Qualifier:
         self.icp = settings["icp"]
         self.sleep = settings["rate_limits"]["sleep_between_calls"]
 
-    def _product_snippets(self, company: str, country: str) -> str:
-        query = f'"{company}" {country} products OR catalog'.strip()
+    @staticmethod
+    def _english_country(country: str) -> str:
+        """Turkish / mixed country labels -> English, for English-language search.
+
+        The input sheet often carries Turkish names ("Fransa", "Hollanda") or
+        combined ones ("Hollanda/Belcika"). Sending those into an English
+        Google query badly degrades the snippets, which is the single biggest
+        cause of false "No" verdicts.
+        """
+        from .crm_exporter import match_country
+        raw = str(country or "").strip()
+        if not raw:
+            return ""
+        hit = match_country(raw)
+        if hit:
+            return hit
+        # combined values: take the first part
+        for sep in ("/", ",", "-", "&"):
+            if sep in raw:
+                first = raw.split(sep)[0].strip()
+                hit = match_country(first)
+                if hit:
+                    return hit
+        return raw
+
+    def _search(self, query: str) -> list[dict]:
         resp = requests.post(
             self.url,
             headers={"X-API-KEY": self.serper_key,
@@ -46,7 +70,25 @@ class Qualifier:
         if not resp.ok:
             status.warn(status.classify_api_error("Serper", resp.status_code, resp.text))
             resp.raise_for_status()
-        organic = resp.json().get("organic", [])[:4]
+        return resp.json().get("organic", [])[:4]
+
+    def _product_snippets(self, company: str, country: str,
+                          website: str = "") -> str:
+        country_en = self._english_country(country)
+        organic = self._search(f'"{company}" {country_en} products OR catalog'.strip())
+
+        # Second chance: a quoted name + "products OR catalog" returns nothing
+        # for many small producers. Retry with a plain query, preferring the
+        # company's own site when we already know the domain.
+        if not organic:
+            from .utils import clean_domain
+            domain = clean_domain(website) if website else ""
+            fallback = f"{domain} products" if domain else f"{company} {country_en}".strip()
+            try:
+                organic = self._search(fallback)
+            except requests.RequestException:
+                organic = []
+
         return "\n".join(
             f"- {r.get('title','')}: {r.get('snippet','')}" for r in organic
         )
@@ -55,7 +97,7 @@ class Qualifier:
                 custom_instructions: str = "") -> dict:
         """Returns {is_fit, company_type, ai_note, error_detail?}."""
         try:
-            snippets = self._product_snippets(company, country)
+            snippets = self._product_snippets(company, country, website)
         except requests.RequestException as exc:
             return {"is_fit": "Unknown", "company_type": "Unknown",
                     "ai_note": "", "error_detail": str(exc)}
@@ -108,6 +150,11 @@ Set "GlassFit" to "No" when:
   chips, dry snacks, bulk grains or similar products
 - The company only resells finished products made and packaged by other
   companies and has no own-brand, filling, packing or packaging purchasing role
+- The company is a RETAILER: a supermarket, hypermarket, discount chain,
+  grocery store, convenience chain, food e-commerce site or any retail banner.
+  This applies EVEN IF the retailer sells private-label or own-brand products,
+  because the glass is bought by the co-packer that fills those products, not
+  by the retail chain. Retailers are always "No".
 - The company mainly sells machinery, logistics, packaging materials or services
 - The company manufactures empty glass bottles, jars or glass packaging itself
 - The company operates mainly in cosmetics, personal care, pharmaceuticals,
@@ -151,6 +198,9 @@ Return "GlassFit": "Yes" if the company also does any of the following:
 Return "GlassFit": "No" only when the company appears to resell finished,
 already-packaged products from other manufacturers and has no evidence of
 own-brand activity, filling, packing or packaging purchasing responsibility.
+
+RETAIL EXCEPTION: this rule does NOT rescue retailers. A supermarket or
+grocery chain stays "No" even when it has a strong private-label range.
 
 GLASS MANUFACTURER OVERRIDE
 
@@ -249,13 +299,22 @@ Apply the rules in this order:
 
 When information is limited:
 
+- Weak or empty search snippets are NOT evidence of a bad fit. Missing
+  information must never by itself produce "GlassFit": "No".
+- In that case, read the COMPANY NAME and the WEBSITE URL as evidence. Words
+  in the name or domain such as conserve/conserves/conserven/conservas,
+  preserved, preserves, jam, marmalade, confiture, sauce, pesto, olio, oil,
+  miel/honey, pickle, antipasti, distillery, winery, brewery, bodega, cantina,
+  juice, beverage, drinks or a URL path like /jams, /sauces, /preserves,
+  /products/fruitpuree indicate a relevant food or beverage producer -> "Yes".
 - Use the most likely conclusion from the snippets and product logic
 - Do not invent unsupported products, facilities or packaging formats
 - If the company clearly has suitable products, default to "Yes"
 - If glass use is shown anywhere in a meaningful product line, return "Yes"
 - If the company sells its own suitable products and outsourcing is not stated,
   default to "Manufacturer"
-- Use "Unknown" only when the business activity truly cannot be determined
+- Use "Unknown" only when the business activity truly cannot be determined,
+  and never as a substitute for reading the company name and website
 
 AINOTE
 
@@ -277,6 +336,8 @@ Good examples:
 - "The company mainly uses PET but also sells a relevant glass-bottled product line."
 - "The company only resells finished beverages and shows no packaging purchasing role."
 - "The company manufactures glass bottles and is therefore a competitor rather than a buyer."
+- "The company is a supermarket chain and does not purchase empty glass packaging itself."
+- "The company name and website indicate a preserved fruit and vegetable producer suited to glass jars."
 
 {additional_instructions}
 
