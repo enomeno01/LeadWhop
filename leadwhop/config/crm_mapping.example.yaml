@@ -1,0 +1,7 @@
+# CRM export fixed values. Copy to crm_mapping.yaml to override defaults.
+# All picklist values are TEXT-based (not Salesforce record IDs) — the value
+# lists themselves live in leadwhop/crm_exporter.py.
+
+record_type_id: "012WP0000001n6jYAA"
+business_category: "Distributor"
+market_positioning: "Strong Player"
