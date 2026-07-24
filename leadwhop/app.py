@@ -317,34 +317,75 @@ if uploaded:
                 wb.save(out)
                 return out.getvalue()
 
-            files = [("📊 Lusha output", result, "leadwhop_output.xlsx", None)]
+            def _multi_xlsx(sheets, widths_map=None):
+                """[(sheet_name, df)] -> one workbook, one tab per frame."""
+                import openpyxl
+                from openpyxl.utils import get_column_letter
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    for sheet_name, df_out in sheets:
+                        df_out.to_excel(writer, index=False,
+                                        sheet_name=sheet_name[:31])
+                buf.seek(0)
+                wb = openpyxl.load_workbook(buf)
+                widths_map = widths_map or {}
+                for ws in wb.worksheets:
+                    widths = widths_map.get(ws.title, {})
+                    for ci in range(1, ws.max_column + 1):
+                        header = ws.cell(1, ci).value
+                        ws.column_dimensions[get_column_letter(ci)].width = \
+                            widths.get(header, 22)
+                        ws.cell(1, ci).font = openpyxl.styles.Font(
+                            bold=True, color="FFFFFF")
+                        ws.cell(1, ci).fill = openpyxl.styles.PatternFill(
+                            "solid", fgColor="0D3B44")
+                        for r in range(2, ws.max_row + 1):
+                            ws.cell(r, ci).alignment = \
+                                openpyxl.styles.Alignment(
+                                    wrap_text=True, vertical="top")
+                out = io.BytesIO()
+                wb.save(out)
+                return out.getvalue()
+
+            # ── Download buttons: CRM bundle is ONE workbook, 3 sheets ───
+            files = [("📊 Lusha output",
+                      _xlsx(result), "leadwhop_output.xlsx")]
+
             if crm_df is not None and len(crm_df):
-                files.append(("🗂️ CRM import", crm_df,
-                              "crm_import.xlsx", None))
-            if subcat_df is not None and len(subcat_df):
-                files.append(("🏷️ Sub Category Maps", subcat_df,
-                              "sub_category_maps.xlsx", None))
-            if loc_df is not None and len(loc_df):
-                files.append(("📍 Locations", loc_df,
-                              "locations.xlsx", None))
+                crm_sheets = [("CRM Lead Import", crm_df)]
+                if subcat_df is not None and len(subcat_df):
+                    crm_sheets.append(("Sub Category Maps", subcat_df))
+                if loc_df is not None and len(loc_df):
+                    crm_sheets.append(("Locations", loc_df))
+                files.append(("🗂️ CRM package",
+                              _multi_xlsx(crm_sheets), "crm_package.xlsx"))
+
             if mail_df is not None and len(mail_df):
-                files.append(("✉️ Mail drafts", mail_df, "mail_drafts.xlsx",
-                              {"Name": 22, "Company": 28, "Email": 38,
-                               "Email_Subject": 55, "Email_Draft": 90}))
+                files.append(("✉️ Mail drafts",
+                              _xlsx(mail_df,
+                                    {"Name": 22, "Company": 28, "Email": 38,
+                                     "Email_Subject": 55, "Email_Draft": 90}),
+                              "mail_drafts.xlsx"))
 
             st.markdown("### Download")
             cols = st.columns(len(files))
-            for col, (label, df_out, fname, widths) in zip(cols, files):
+            for col, (label, payload, fname) in zip(cols, files):
                 col.download_button(
-                    label,
-                    _xlsx(df_out, widths),
-                    file_name=fname,
-                    width="stretch",
+                    label, payload, file_name=fname, width="stretch",
                 )
 
             # ── Preview tables ───────────────────────────────────────────
             st.markdown("### Results")
-            tabs = st.tabs([label for label, *_ in files])
-            for tab, (_, df_out, *_rest) in zip(tabs, files):
+            previews = [("📊 Lusha output", result)]
+            if crm_df is not None and len(crm_df):
+                previews.append(("🗂️ CRM Lead Import", crm_df))
+            if subcat_df is not None and len(subcat_df):
+                previews.append(("🏷️ Sub Category Maps", subcat_df))
+            if loc_df is not None and len(loc_df):
+                previews.append(("📍 Locations", loc_df))
+            if mail_df is not None and len(mail_df):
+                previews.append(("✉️ Mail drafts", mail_df))
+            tabs = st.tabs([label for label, _ in previews])
+            for tab, (_, df_out) in zip(tabs, previews):
                 with tab:
                     st.dataframe(df_out, width="stretch", height=350)
