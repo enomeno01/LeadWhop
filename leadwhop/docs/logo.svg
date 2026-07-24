@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="180" viewBox="0 0 600 180" font-family="ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+
+  <!-- petrol badge -->
+  <rect x="16" y="16" width="148" height="148" rx="34" fill="#0D3B44"/>
+  <rect x="16" y="16" width="148" height="148" rx="34" fill="none" stroke="#1E6674" stroke-width="3"/>
+
+  <!-- target mark inside badge -->
+  <g transform="translate(90,90)">
+    <circle r="44" fill="none" stroke="#F2B33D" stroke-width="8"/>
+    <circle r="25" fill="none" stroke="#F2B33D" stroke-width="8" opacity="0.5"/>
+    <circle r="9.5" fill="#F2B33D"/>
+    <!-- arrow strike -->
+    <line x1="13" y1="-13" x2="46" y2="-46" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 34 -56 L 56 -56 L 56 -34" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- wordmark: Lead (petrol tone) Whop (amber) -->
+  <text x="192" y="100" font-size="56" font-weight="800" letter-spacing="-1">
+    <tspan fill="#2E7A8C">Lead</tspan><tspan fill="#F2B33D" dx="6">Whop</tspan>
+  </text>
+  <text x="196" y="134" font-size="16" fill="#5F8A94" letter-spacing="3">COMPANY LIST IN · LEADS OUT</text>
+</svg>
