@@ -21,7 +21,8 @@ from .phone_enricher import PhoneEnricher
 from .qualifier import Qualifier
 from .website_finder import WebsiteFinder
 
-STAGES = ["websites", "qualify", "contacts", "phones", "export", "mail"]
+STAGES = ["websites", "qualify", "contacts", "phones", "export",
+          "bulk_emails", "mail"]
 
 
 class Pipeline:
@@ -70,10 +71,36 @@ class Pipeline:
     def _checkpoint(self, df: pd.DataFrame, name: str) -> None:
         df.to_excel(self.output_dir / f"checkpoint_{name}.xlsx", index=False)
 
+    @staticmethod
+    def _ensure_cols(df, text_cols=(), bool_cols=()):
+        """Create columns if missing; coerce existing ones to a writable dtype.
+
+        pandas reads an all-empty Excel column as float64. Newer pandas then
+        refuses to write a string into it ("Invalid value ... for dtype
+        'float64'"), so a user file that merely CONTAINS an empty AI_Note or
+        Website column would crash the run. Coercing to str/bool up front makes
+        the column safe regardless of what the upload looked like.
+        """
+        for col in text_cols:
+            if col not in df.columns:
+                df[col] = ""
+            else:
+                df[col] = df[col].fillna("").astype(str)
+                df[col] = df[col].replace({"nan": "", "None": ""})
+        for col in bool_cols:
+            if col not in df.columns:
+                df[col] = False
+            else:
+                df[col] = (df[col].fillna(False)
+                           .apply(lambda v: str(v).strip().lower()
+                                  in ("true", "1", "yes")))
+        return df
+
     def run(self, input_path: str, stages: list[str],
             event_name: str = "", progress_cb=None,
             custom_icp_prompt: str = "",
-            custom_mail_prompt: str = "") -> pd.DataFrame:
+            custom_mail_prompt: str = "",
+            bulk_target: int = 10) -> pd.DataFrame:
         self.crm_df = None
         self.subcat_df = None
         self.loc_df = None
@@ -104,9 +131,10 @@ class Pipeline:
                 progress_cb(stage, i + 1, n)
 
         if "websites" in stages:
-            for col in ("Website", "Website_Confidence", "Website_Debug", "Needs_Review"):
-                if col not in df.columns:
-                    df[col] = "" if col != "Needs_Review" else False
+            df = self._ensure_cols(
+                df,
+                text_cols=("Website", "Website_Confidence", "Website_Debug"),
+                bool_cols=("Needs_Review",))
             for i, row in df.iterrows():
                 if str(df.at[i, "Website"]).strip() not in ("", "nan"):
                     df.at[i, "Website_Confidence"] = df.at[i, "Website_Confidence"] or "user_provided"
@@ -122,9 +150,8 @@ class Pipeline:
                     self._checkpoint(df, "websites")
 
         if "qualify" in stages:
-            for col in ("ICP_Fit", "Company_Type", "AI_Note"):
-                if col not in df.columns:
-                    df[col] = ""
+            df = self._ensure_cols(
+                df, text_cols=("ICP_Fit", "Company_Type", "AI_Note"))
             for i, row in df.iterrows():
                 if str(df.at[i, "AI_Note"]).strip() not in ("", "nan"):
                     continue
@@ -176,7 +203,7 @@ class Pipeline:
             df = pd.DataFrame(rows) if rows else df
 
         if "phones" in stages and "Email" in df.columns:
-            df["Phones"] = ""
+            df = self._ensure_cols(df, text_cols=("Phones",))
             for i, row in df.iterrows():
                 first, last = "", ""
                 if "Name" in df.columns:
@@ -219,6 +246,45 @@ class Pipeline:
                 status.warn("Export skipped — no Email data found. Run stage 3 "
                             "first, or upload a file that already contains "
                             "contact columns (Email, Title, Name).")
+
+        if "bulk_emails" in stages:
+            rows = []
+            targets = (df[df.get("ICP_Fit", "Yes") != "No"]
+                       if "ICP_Fit" in df.columns else df)
+            for i, (_, row) in enumerate(targets.iterrows()):
+                found = self.contacts.find_bulk(
+                    str(row["Company"]),
+                    str(row.get("Website", "")),
+                    str(row.get("Country", "")),
+                    target=bulk_target,
+                )
+                base = {k: v for k, v in row.to_dict().items()
+                        if k not in ("Name", "Title", "Email", "LinkedIn",
+                                     "Contact_Tier", "Match_Method",
+                                     "Lusha_Company", "Lusha_Domain",
+                                     "Credit_Charged")}
+                for c in found:
+                    rows.append({**base,
+                                 "Name":           c.get("name", ""),
+                                 "Title":          c.get("title", ""),
+                                 "Email":          c.get("email", ""),
+                                 "LinkedIn":       c.get("linkedin", ""),
+                                 "Contact_Tier":   c.get("tier", ""),
+                                 "Match_Method":   c.get("match_method", ""),
+                                 "Lusha_Company":  c.get("lusha_company", ""),
+                                 "Lusha_Domain":   c.get("lusha_domain", ""),
+                                 "Credit_Charged": c.get("credit_charged", ""),
+                                 "Needs_Review":   bool(row.get("Needs_Review", False))})
+                if not found:
+                    rows.append({**base, "Name": "", "Title": "", "Email": "",
+                                 "LinkedIn": "", "Contact_Tier": "",
+                                 "Match_Method": "not_found",
+                                 "Lusha_Company": "", "Lusha_Domain": "",
+                                 "Credit_Charged": "", "Needs_Review": True})
+                report(i, len(targets), "bulk_emails")
+                if i % self.checkpoint_every == 0 and rows:
+                    self._checkpoint(pd.DataFrame(rows), "bulk_emails")
+            df = pd.DataFrame(rows) if rows else df
 
         if "mail" in stages:
             df = self.drafter.run(df, custom_instructions=custom_mail_prompt)
