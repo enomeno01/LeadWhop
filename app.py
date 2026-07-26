@@ -189,24 +189,6 @@ with st.sidebar:
                     height=80, label_visibility="collapsed",
                 )
 
-    st.divider()
-    with st.expander("🗑️ Cache", expanded=False):
-        st.caption("Verdicts are cached so a company is never re-analysed "
-                   "twice. If a company was judged with older code or an "
-                   "outdated prompt, clear the cache to force a fresh look.")
-        if st.button("Clear qualification cache", width="stretch"):
-            import shutil
-            from pathlib import Path as _P
-            removed = 0
-            cache_root = _P(__file__).parent / ".cache"
-            if cache_root.exists():
-                for f in cache_root.glob("*.json"):
-                    try:
-                        f.unlink(); removed += 1
-                    except Exception:
-                        pass
-            st.success(f"Cleared {removed} cache file(s). "
-                       f"Next run will re-analyse every company.")
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 st.markdown("# 🎯 LeadWhop")
