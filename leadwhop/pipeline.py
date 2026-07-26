@@ -152,9 +152,12 @@ class Pipeline:
         if "qualify" in stages:
             df = self._ensure_cols(
                 df, text_cols=("ICP_Fit", "Company_Type", "AI_Note"))
+            # Every run is a full reset: rows are ALWAYS re-qualified, even
+            # when the input file already carries an AI_Note from a previous
+            # run. The old resume-skip silently copied stale verdicts forward
+            # (the "motorcycle" bug) whenever an output file was re-used as
+            # input, which is far more confusing than the small extra cost.
             for i, row in df.iterrows():
-                if str(df.at[i, "AI_Note"]).strip() not in ("", "nan"):
-                    continue
                 res = self.qualifier.qualify(
                     str(row["Company"]),
                     str(row.get("Country", "")),
