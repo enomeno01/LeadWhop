@@ -134,8 +134,15 @@ class Qualifier:
         ckey = self._identity_key(company, website)
         if custom_instructions and custom_instructions.strip():
             ckey += "|" + str(hash(custom_instructions.strip()))
-        cached = cache.get(ckey)
+        import os as _os
+        if _os.environ.get("DISABLE_QUALIFY_CACHE") == "1":
+            cached = None
+            print(f"   ⚙️ cache DISABLED for {company!r}")
+        else:
+            cached = cache.get(ckey)
         if cached is not None:
+            print(f"   💾 CACHE HIT for {company!r} (key={ckey!r}) — "
+                  f"returning stored verdict, NO fresh search")
             try:
                 return json.loads(cached)
             except Exception:
