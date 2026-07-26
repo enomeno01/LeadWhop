@@ -79,19 +79,26 @@ class Qualifier:
         country_en = self._english_country(country)
         domain = clean_domain(website) if website else ""
 
-        # Search the DOMAIN first whenever we know it. The Company Name column
-        # is frequently a retail banner, a private label, a holding company or
-        # a parent brand ("Hacendado (Mercadona)"), which pulls back snippets
-        # about the wrong business. The domain names exactly one operating
-        # company, so it produces far better grounded evidence.
+        # Search the DOMAIN first whenever we know it — but with the site:
+        # operator. A bare "hero.es products OR catalog" query lets Google
+        # treat the domain as loose text and match ANY "Hero" (the motorcycle
+        # maker's parts catalogue outranks the Spanish food producer). With
+        # site:hero.es the results can only come from that exact website, so
+        # the snippets always describe the right company.
         if domain:
-            primary  = f"{domain} products OR catalog"
+            primary  = f"site:{domain} products"
             fallback = f'"{company}" {country_en} products'.strip()
         else:
             primary  = f'"{company}" {country_en} products OR catalog'.strip()
             fallback = f"{company} {country_en}".strip()
 
         organic = self._search(primary)
+        if not organic and domain:
+            # Some sites have thin indexing; widen within the same site.
+            try:
+                organic = self._search(f"site:{domain}")
+            except requests.RequestException:
+                organic = []
         if not organic:
             try:
                 organic = self._search(fallback)
