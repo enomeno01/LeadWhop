@@ -163,14 +163,15 @@ def _run_payload(headers: dict, name: str, payload: dict) -> list:
     return []
 
 
-def _search_by_domain(headers: dict, domain: str, keywords: list) -> tuple[list, str]:
+def _search_by_domain(headers: dict, domain: str, keywords: list,
+                      page: int = 0, size: int = 10) -> tuple[list, str]:
     """Strategy 1: companies.include.domains filter (most precise)."""
     payload = {
         "filters": {
             "contacts": {"include": {"jobTitles": keywords}},
             "companies": {"include": {"domains": [domain]}},
         },
-        "pages": {"page": 0, "size": 10},
+        "pages": {"page": page, "size": size},
     }
     results = _run_payload(headers, "domain_filter", payload)
     if results:
@@ -181,19 +182,20 @@ def _search_by_domain(headers: dict, domain: str, keywords: list) -> tuple[list,
         "filters": {
             "contacts": {"include": {"jobTitles": keywords, "searchText": domain}}
         },
-        "pages": {"page": 0, "size": 10},
+        "pages": {"page": page, "size": size},
     }
     results2 = _run_payload(headers, "domain_searchtext", payload2)
     return (results2, "domain_searchtext") if results2 else ([], "no_result")
 
 
-def _search_by_name(headers: dict, company: str, keywords: list) -> tuple[list, str]:
+def _search_by_name(headers: dict, company: str, keywords: list,
+                    page: int = 0, size: int = 10) -> tuple[list, str]:
     """Strategy 3: company name search (used only when domain yields nothing)."""
     payload = {
         "filters": {
             "contacts": {"include": {"jobTitles": keywords, "companies": [{"names": [company]}]}}
         },
-        "pages": {"page": 0, "size": 10},
+        "pages": {"page": page, "size": size},
     }
     results = _run_payload(headers, "name_filter", payload)
     return (results, "name_filter") if results else ([], "no_result")
@@ -269,6 +271,98 @@ class ContactFinder:
         self.max_contacts   = settings["pipeline"]["max_contacts_per_company"]
         self.country_tlds   = {str(k).lower(): str(v)
                                for k, v in (settings.get("country_tlds") or {}).items()}
+
+    def find_bulk(self, company: str, website: str = "", country: str = "",
+                  target: int = 10, max_pages: int = 5) -> list[dict]:
+        """Keep searching until `target` contacts with an email are collected.
+
+        Same matching rules as find(): domain variants first, name search as a
+        fallback, the same company-match guard. The difference is that find()
+        stops at the first tier that produces anything, because it only wants a
+        couple of decision-makers. Here we walk every tier and page on through
+        the result set until the quota is met.
+
+        Cost warning: Lusha searches are free but each email reveal burns a
+        credit, so a target of N costs up to N credits per company.
+        """
+        domain = clean_domain(website) or ""
+        variants = domain_variants(domain, country, self.country_tlds)
+        found: list[dict] = []
+        seen_ids: set[str] = set()
+        top_company_name: str | None = None
+        print(f"  📥 Bulk search — target {target} contacts")
+
+        for tier in self.tiers:
+            if len(found) >= target:
+                break
+            keywords = tier["keywords"]
+            print(f"  🔎 {tier['name']}  ({len(found)}/{target})")
+
+            for page in range(max_pages):
+                if len(found) >= target:
+                    break
+
+                people, method = [], "no_result"
+                for var in variants:
+                    people, method = _search_by_domain(
+                        self.headers, var, keywords, page=page, size=20)
+                    if people:
+                        if var != domain:
+                            method = f"domain_variant:{var}"
+                        break
+
+                if not people and page == 0:
+                    people, method = _search_by_name(
+                        self.headers, company, keywords, page=page, size=20)
+
+                if not people:
+                    break            # no more results in this tier
+
+                if top_company_name is None:
+                    top_company_name = _get_company_name(people[0])
+                    print(f"    🎯 Anchored to: {top_company_name}")
+
+                for person in people:
+                    if len(found) >= target:
+                        break
+                    pid = _get_person_id(person)
+                    if not pid or pid in seen_ids:
+                        continue
+                    seen_ids.add(pid)
+
+                    lusha_company = _get_company_name(person)
+                    if (method == "name_filter"
+                            and top_company_name and top_company_name != "-"
+                            and lusha_company != "-"
+                            and not _company_match(top_company_name, lusha_company)):
+                        print(f"    ⛔ Rejected (company mismatch): {lusha_company}")
+                        continue
+
+                    name  = _get_name(person)
+                    title = _get_title(person)
+                    linkedin_search = _get_linkedin(person)
+
+                    time.sleep(SLEEP_BEFORE_ENRICH)
+                    email, linkedin_enrich, charged = _enrich(self.headers, pid)
+                    linkedin = linkedin_enrich if linkedin_enrich != "-" else linkedin_search
+
+                    if email and email != "-":
+                        print(f"    🎯 {len(found)+1}/{target}  {email}")
+                        found.append({
+                            "name": name, "title": title, "email": email,
+                            "linkedin": linkedin, "tier": tier["name"],
+                            "match_method": method,
+                            "lusha_company": lusha_company,
+                            "lusha_domain": _get_domain(person),
+                            "credit_charged": charged,
+                        })
+
+            if len(found) < target:
+                time.sleep(SLEEP_BETWEEN_TIERS)
+
+        print(f"  ✅ Bulk result: {len(found)}/{target}")
+        time.sleep(self.sleep_company)
+        return found
 
     def find(self, company: str, website: str = "",
              country: str = "") -> list[dict]:
