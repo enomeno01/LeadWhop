@@ -25,12 +25,6 @@ from .llm import LLM
 from . import status
 
 
-# Bump this whenever the qualify prompt or search logic changes. The value is
-# baked into every cache key, so old verdicts are invalidated automatically —
-# no manual cache clearing, ever.
-PROMPT_VERSION = "v3-2026-07"
-
-
 class Qualifier:
     def __init__(self, llm: LLM, settings: dict):
         self.llm = llm
@@ -130,21 +124,12 @@ class Qualifier:
 
     def qualify(self, company: str, country: str = "", website: str = "",
                 custom_instructions: str = "") -> dict:
-        """Returns {is_fit, company_type, ai_note, error_detail?}."""
-        # One verdict per company, always. Cached across rows AND across runs.
-        cache = self.llm._cache("qualify_verdict")
-        # Cache files are already namespaced per model in LLM._cache().
-        ckey = f"{PROMPT_VERSION}|{self._identity_key(company, website)}"
-        if custom_instructions and custom_instructions.strip():
-            ckey += "|" + str(hash(custom_instructions.strip()))
-        cached = cache.get(ckey)
-        if cached is not None:
-            try:
-                return json.loads(cached)
-            except Exception:
-                pass
+        """Returns {is_fit, company_type, ai_note, error_detail?}.
 
-
+        No caching: every company is analysed fresh on every run. This is a
+        little more expensive but removes a whole class of "stale verdict"
+        confusion — the result you see always reflects the current code.
+        """
         try:
             snippets = self._product_snippets(company, country, website)
         except requests.RequestException as exc:
@@ -477,12 +462,8 @@ All output text must be in English.
         )
         time.sleep(self.sleep)
 
-        result = {
+        return {
             "is_fit":       verdict.get("GlassFit", "Unknown"),
             "company_type": verdict.get("CompanyType", "Unknown"),
             "ai_note":      verdict.get("AINote", ""),
         }
-        # Only cache real verdicts — never cache an API failure.
-        if result["is_fit"] in ("Yes", "No"):
-            cache.set(ckey, json.dumps(result))
-        return result
