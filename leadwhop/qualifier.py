@@ -25,6 +25,12 @@ from .llm import LLM
 from . import status
 
 
+# Bump this whenever the qualify prompt or search logic changes. The value is
+# baked into every cache key, so old verdicts are invalidated automatically —
+# no manual cache clearing, ever.
+PROMPT_VERSION = "v3-2026-07"
+
+
 class Qualifier:
     def __init__(self, llm: LLM, settings: dict):
         self.llm = llm
@@ -91,15 +97,12 @@ class Qualifier:
             primary  = f'"{company}" {country_en} products OR catalog'.strip()
             fallback = f"{company} {country_en}".strip()
 
-        print(f"   🔍 qualify search: {primary!r}")
         organic = self._search(primary)
         if not organic:
-            print(f"   🔍 fallback search: {fallback!r}")
             try:
                 organic = self._search(fallback)
             except requests.RequestException:
                 organic = []
-        print(f"   📄 {len(organic)} snippet(s) returned")
 
         return "\n".join(
             f"- {r.get('title','')}: {r.get('snippet','')}" for r in organic
@@ -131,22 +134,16 @@ class Qualifier:
         # One verdict per company, always. Cached across rows AND across runs.
         cache = self.llm._cache("qualify_verdict")
         # Cache files are already namespaced per model in LLM._cache().
-        ckey = self._identity_key(company, website)
+        ckey = f"{PROMPT_VERSION}|{self._identity_key(company, website)}"
         if custom_instructions and custom_instructions.strip():
             ckey += "|" + str(hash(custom_instructions.strip()))
-        import os as _os
-        if _os.environ.get("DISABLE_QUALIFY_CACHE") == "1":
-            cached = None
-            print(f"   ⚙️ cache DISABLED for {company!r}")
-        else:
-            cached = cache.get(ckey)
+        cached = cache.get(ckey)
         if cached is not None:
-            print(f"   💾 CACHE HIT for {company!r} (key={ckey!r}) — "
-                  f"returning stored verdict, NO fresh search")
             try:
                 return json.loads(cached)
             except Exception:
                 pass
+
 
         try:
             snippets = self._product_snippets(company, country, website)
