@@ -54,15 +54,6 @@ class CRMSheets:
     def profile(self, company: str, country: str, ai_note: str,
                 website: str = "") -> dict:
         """-> {sub_category, units, locations:[{city,country,type}]}"""
-        cache = self.llm._cache("crm_sheets")
-        key = f"{company}|{country}".lower()
-        hit = cache.get(key)
-        if hit is not None:
-            try:
-                return json.loads(hit)
-            except Exception:
-                pass
-
         prompt = f"""You prepare CRM records for a glass packaging manufacturer.
 
 Company: {company}
@@ -130,8 +121,6 @@ Return ONLY valid JSON:
             "units": _round_units(raw.get("units")),
             "locations": locations,
         }
-        if result["sub_category"]:
-            cache.set(key, json.dumps(result))
         return result
 
     # ── sheet builders ──────────────────────────────────────────────────────
