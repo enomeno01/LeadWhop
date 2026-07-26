@@ -1,323 +1,404 @@
-"""Orchestrator — runs any subset of stages with checkpointing.
+"""LeadWhop — Streamlit UI.
 
-Usage:
-    pipe = Pipeline.from_config("config/settings.yaml")
-    df = pipe.run("companies.xlsx", stages=["websites", "qualify", "contacts"])
+Deploy: push to GitHub → connect on share.streamlit.io → add secrets.
+Local:  streamlit run app.py
 """
-from __future__ import annotations
-
-from pathlib import Path
+import hmac
+import io
+import os
+import tempfile
 
 import pandas as pd
-import yaml
-from dotenv import load_dotenv
+import streamlit as st
 
-from .contact_finder import ContactFinder
-from .mail_drafter import MailDrafter
-from .crm_sheets import CRMSheets
-from .crm_exporter import CRMExporter
-from .llm import LLM
-from .phone_enricher import PhoneEnricher
-from .qualifier import Qualifier
-from .website_finder import WebsiteFinder
+from leadwhop.pipeline import Pipeline, STAGES
 
-STAGES = ["websites", "qualify", "contacts", "phones", "export",
-          "bulk_emails", "mail"]
+# ── Streamlit Cloud Secrets → env vars ──────────────────────────────────────
+for _key in ("OPENAI_API_KEY", "SERPER_API_KEY", "LUSHA_API_KEY"):
+    if not os.environ.get(_key):
+        try:
+            val = st.secrets.get(_key)
+            if val:
+                os.environ[_key] = val
+        except Exception:
+            pass
 
+# ── Password gate ────────────────────────────────────────────────────────────
+# The password lives ONLY in Streamlit Secrets (or a local .env). There is no
+# hard-coded fallback: in a public repo a default password is the same as no
+# password at all, and anyone who read it could burn the owner's API credits.
+# If APP_PASSWORD is not configured the app fails closed rather than open.
+_APP_PASSWORD = os.environ.get("APP_PASSWORD")
+if not _APP_PASSWORD:
+    try:
+        _APP_PASSWORD = st.secrets.get("APP_PASSWORD")
+    except Exception:
+        _APP_PASSWORD = None
 
-class Pipeline:
-    def __init__(self, settings: dict, tiers: list[dict], crm_mapping: dict | None):
-        load_dotenv()
-        self.settings = settings
-        cache_dir = settings["pipeline"]["cache_dir"]
-        self.llm = LLM(settings["models"]["llm"], cache_dir,
-                       settings["models"]["temperature"],
-                       settings["rate_limits"]["sleep_between_calls"])
-        # Cheap tier for closed-set classification; falls back to the main
-        # model when models.llm_cheap is absent.
-        self.llm_cheap = LLM(settings["models"].get("llm_cheap")
-                             or settings["models"]["llm"], cache_dir,
-                             settings["models"]["temperature"],
-                             settings["rate_limits"]["sleep_between_calls"])
-        self.finder = WebsiteFinder(self.llm, settings)
-        self.qualifier = Qualifier(self.llm, settings)
-        self.contacts = ContactFinder(tiers, settings)
-        self.phones = PhoneEnricher(settings)
-        self.exporter = (CRMExporter(self.llm, crm_mapping, llm_cheap=self.llm_cheap)
-                         if crm_mapping else None)
-        self.drafter  = MailDrafter(self.llm)
-        self.sheets   = CRMSheets(self.llm,
-                                  settings["rate_limits"]["sleep_between_calls"])
-        self.checkpoint_every = settings["pipeline"]["checkpoint_every"]
-        self.output_dir = Path(settings["pipeline"]["output_dir"])
-        self.output_dir.mkdir(exist_ok=True)
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "login_attempts" not in st.session_state:
+    st.session_state.login_attempts = 0
 
-    @classmethod
-    def from_config(cls, settings_path: str = "config/settings.yaml") -> "Pipeline":
-        # Resolve relative to this file so it works on Streamlit Cloud too
-        root = Path(__file__).parent.parent
-        settings_file = root / settings_path
-        base = settings_file.parent
-        settings = yaml.safe_load(settings_file.read_text(encoding="utf-8"))
-        tiers = yaml.safe_load((base / "tiers.yaml").read_text(encoding="utf-8"))
-        mapping_file = base / "crm_mapping.yaml"
-        if not mapping_file.exists():
-            mapping_file = base / "crm_mapping.example.yaml"
-        mapping = yaml.safe_load(mapping_file.read_text(encoding="utf-8"))
-        return cls(settings, tiers, mapping)
+if not st.session_state.authenticated:
+    st.markdown("# 🎯 LeadWhop")
 
-    # ------------------------------------------------------------------
+    if not _APP_PASSWORD:
+        st.error("**APP_PASSWORD is not configured — the app is locked.**")
+        st.markdown(
+            "Set it before using the app:\n\n"
+            "- **Streamlit Cloud:** Settings → Secrets → add "
+            "`APP_PASSWORD = \"your-password\"`\n"
+            "- **Local:** add `APP_PASSWORD=your-password` to your `.env`"
+        )
+        st.stop()
 
-    def _checkpoint(self, df: pd.DataFrame, name: str) -> None:
-        df.to_excel(self.output_dir / f"checkpoint_{name}.xlsx", index=False)
+    # Slow down brute-force attempts without locking the owner out.
+    if st.session_state.login_attempts >= 5:
+        st.error("Too many failed attempts. Reload the page to try again.")
+        st.stop()
 
-    @staticmethod
-    def _ensure_cols(df, text_cols=(), bool_cols=()):
-        """Create columns if missing; coerce existing ones to a writable dtype.
+    st.markdown("Enter the password to continue.")
+    pwd = st.text_input("Password", type="password", key="pwd_input")
+    if st.button("Enter", type="primary"):
+        # Constant-time comparison: a plain == leaks length/prefix via timing.
+        if hmac.compare_digest(str(pwd), str(_APP_PASSWORD)):
+            st.session_state.authenticated = True
+            st.session_state.login_attempts = 0
+            st.rerun()
+        else:
+            st.session_state.login_attempts += 1
+            left = 5 - st.session_state.login_attempts
+            st.error(f"Wrong password. {left} attempt(s) left.")
+    st.stop()
 
-        pandas reads an all-empty Excel column as float64. Newer pandas then
-        refuses to write a string into it ("Invalid value ... for dtype
-        'float64'"), so a user file that merely CONTAINS an empty AI_Note or
-        Website column would crash the run. Coercing to str/bool up front makes
-        the column safe regardless of what the upload looked like.
-        """
-        for col in text_cols:
-            if col not in df.columns:
-                df[col] = ""
-            else:
-                df[col] = df[col].fillna("").astype(str)
-                df[col] = df[col].replace({"nan": "", "None": ""})
-        for col in bool_cols:
-            if col not in df.columns:
-                df[col] = False
-            else:
-                df[col] = (df[col].fillna(False)
-                           .apply(lambda v: str(v).strip().lower()
-                                  in ("true", "1", "yes")))
-        return df
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="LeadWhop",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-    def run(self, input_path: str, stages: list[str],
-            event_name: str = "", progress_cb=None,
-            custom_icp_prompt: str = "",
-            custom_mail_prompt: str = "",
-            bulk_target: int = 10) -> pd.DataFrame:
-        self.crm_df = None
-        self.subcat_df = None
-        self.loc_df = None
-        df = pd.read_excel(input_path)
-        # Resolve the company column by NAME (case-insensitive), never by
-        # position — so a "Name" column is never mistaken for the company.
-        if "Company" not in df.columns:
-            # Accept common variants: "Company Name", "company name", "COMPANY", etc.
-            company_aliases = ["company name", "company", "şirket", "sirket",
-                               "firma", "company_name", "companyname"]
-            found = None
-            for col in df.columns:
-                if str(col).strip().lower() in company_aliases:
-                    found = col
-                    break
-            if found:
-                df["Company"] = df[found]
-            elif "Name" not in df.columns and "name" not in [str(c).lower() for c in df.columns]:
-                # No company AND no name column — assume first column is company
-                df = df.rename(columns={df.columns[0]: "Company"})
-            else:
-                # There is a Name column but no company column — leave a blank
-                # Company so downstream keys exist, without clobbering Name.
-                df["Company"] = ""
+# ── Custom CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+[data-testid="stSidebar"] { background-color: #0a2f38; }
+.block-container { padding-top: 2rem; }
+.metric-card {
+    background: #124E5B;
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem;
+    text-align: center;
+}
+.metric-card .value { font-size: 2.2rem; font-weight: 800; color: #F2B33D; }
+.metric-card .label { font-size: 0.85rem; color: #9CC3CB; margin-top: 0.2rem; }
+.stage-badge {
+    display: inline-block;
+    background: #1E6674;
+    color: #F2B33D;
+    border-radius: 20px;
+    padding: 0.2rem 0.8rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-bottom: 0.3rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
-        def report(i, n, stage):
-            if progress_cb:
-                progress_cb(stage, i + 1, n)
+# ── Sidebar ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    import pathlib as _pl
+    _logo = _pl.Path(__file__).parent / "docs" / "logo.svg"
+    if _logo.exists():
+        st.image(str(_logo), width="stretch")
+    st.divider()
 
-        if "websites" in stages:
-            df = self._ensure_cols(
-                df,
-                text_cols=("Website", "Website_Confidence", "Website_Debug"),
-                bool_cols=("Needs_Review",))
-            for i, row in df.iterrows():
-                if str(df.at[i, "Website"]).strip() not in ("", "nan"):
-                    df.at[i, "Website_Confidence"] = df.at[i, "Website_Confidence"] or "user_provided"
-                    df.at[i, "Website_Debug"] = "user_provided"
-                    continue  # user already supplied a domain — trust it, skip search
-                res = self.finder.find(str(row["Company"]), str(row.get("Country", "")))
-                df.at[i, "Website"] = res.get("website", "")
-                df.at[i, "Website_Confidence"] = res.get("confidence", "")
-                df.at[i, "Website_Debug"] = res.get("debug", "")
-                df.at[i, "Needs_Review"] = bool(res.get("needs_review", False))
-                report(i, len(df), "websites")
-                if i % self.checkpoint_every == 0:
-                    self._checkpoint(df, "websites")
+    # API keys — only shown when not already injected from Secrets
+    missing = [k for k in ("OPENAI_API_KEY", "SERPER_API_KEY", "LUSHA_API_KEY")
+               if not os.environ.get(k)]
+    if missing:
+        st.markdown("### 🔑 API Keys")
+        st.caption("Keys stay in this session only — never written to disk.")
+        label_map = {"OPENAI_API_KEY": "OpenAI",
+                     "SERPER_API_KEY": "Serper.dev",
+                     "LUSHA_API_KEY":  "Lusha"}
+        for key in missing:
+            val = st.text_input(label_map[key], type="password", key=key)
+            if val:
+                os.environ[key] = val
+        st.divider()
 
-        if "qualify" in stages:
-            df = self._ensure_cols(
-                df, text_cols=("ICP_Fit", "Company_Type", "AI_Note"))
-            for i, row in df.iterrows():
-                if str(df.at[i, "AI_Note"]).strip() not in ("", "nan"):
-                    continue
-                res = self.qualifier.qualify(
-                    str(row["Company"]),
-                    str(row.get("Country", "")),
-                    str(row.get("Website", "")),
-                    custom_instructions=custom_icp_prompt,
+    st.markdown("### ⚙️ Pipeline stages")
+    stage_meta = {
+        "websites":  ("1", "Find websites",        True),
+        "qualify":   ("2", "Check product fit",     True),
+        "contacts":  ("3", "Find buyers",           False),
+        "phones":    ("4", "Enrich phones",         False),
+        "export":      ("5", "Export to CRM",              False),
+        "bulk_emails": ("6", "Bulk e-mail finder",          False),
+        "mail":        ("7", "Create personalized e-mails", False),
+    }
+    selected = []
+    for stage, (num, label, default) in stage_meta.items():
+        if st.checkbox(f"**{num}** — {label}", value=default, key=f"stage_{stage}"):
+            selected.append(stage)
+
+    # Dependency notes — export can run standalone on a file that already
+    # contains contact columns (Email, Title, Name) from a previous run.
+    if "export" in selected and "contacts" not in selected:
+        st.info("ℹ️ Stage 5 alone: your file must already contain contact "
+                "columns (Email, Title, Name) from a previous 1-3 run.")
+    if "contacts" in selected and "qualify" not in selected:
+        st.info("ℹ️ Tip: Stage 2 filters companies before spending Lusha credits.")
+
+    event_name = ""
+    if "export" in selected:
+        st.divider()
+        event_name = st.text_input("📅 Event name", placeholder="e.g. PLMA 2026")
+
+    custom_icp_prompt = ""
+    custom_mail_prompt = ""
+    bulk_target = 10
+    if "qualify" in selected or "mail" in selected or "bulk_emails" in selected:
+        st.divider()
+        with st.expander("⚙️ Advanced settings", expanded=False):
+            if "bulk_emails" in selected:
+                st.caption("**Bulk e-mail finder** — contacts to collect "
+                           "per company")
+                bulk_target = st.number_input(
+                    "Leads per company", min_value=1, max_value=100,
+                    value=10, step=1, label_visibility="collapsed",
                 )
-                # Single Company_Type column: Manufacturer / Co-packer / Brand Owner / Distributor / Unknown
-                df.at[i, "ICP_Fit"]      = res["is_fit"]
-                df.at[i, "Company_Type"] = res["company_type"]
-                df.at[i, "AI_Note"]      = res["ai_note"]
-                report(i, len(df), "qualify")
-                if i % self.checkpoint_every == 0:
-                    self._checkpoint(df, "qualify")
-
-        if "contacts" in stages:
-            rows = []
-            targets = df[df.get("ICP_Fit", "Yes") != "No"] if "ICP_Fit" in df.columns else df
-            for i, (_, row) in enumerate(targets.iterrows()):
-                found = self.contacts.find(str(row["Company"]),
-                                           str(row.get("Website", "")),
-                                           str(row.get("Country", "")))
-                for c in found:
-                    flagged = bool(row.get("Needs_Review", False)) or (
-                        c.get("match_method") == "name_filter")
-                    rows.append({**row.to_dict(),
-                                 "Name":           c.get("name", ""),
-                                 "Title":          c.get("title", ""),
-                                 "Email":          c.get("email", ""),
-                                 "LinkedIn":       c.get("linkedin", ""),
-                                 "Contact_Tier":   c.get("tier", ""),
-                                 "Match_Method":   c.get("match_method", ""),
-                                 "Lusha_Company":  c.get("lusha_company", ""),
-                                 "Lusha_Domain":   c.get("lusha_domain", ""),
-                                 "Credit_Charged": c.get("credit_charged", ""),
-                                 "Needs_Review":   flagged})
-                if not found:
-                    rows.append({**row.to_dict(),
-                                 "Name": "", "Title": "", "Email": "",
-                                 "LinkedIn": "", "Contact_Tier": "",
-                                 "Match_Method": "not_found",
-                                 "Lusha_Company": "", "Lusha_Domain": "",
-                                 "Credit_Charged": "", "Needs_Review": True})
-                report(i, len(targets), "contacts")
-                if i % self.checkpoint_every == 0 and rows:
-                    self._checkpoint(pd.DataFrame(rows), "contacts")
-            df = pd.DataFrame(rows) if rows else df
-
-        if "phones" in stages and "Email" in df.columns:
-            df = self._ensure_cols(df, text_cols=("Phones",))
-            for i, row in df.iterrows():
-                first, last = "", ""
-                if "Name" in df.columns:
-                    from .utils import split_full_name
-                    first, last = split_full_name(row.get("Name", ""))
-                df.at[i, "Phones"] = self.phones.find_phones(
-                    email=str(row.get("Email", "")), first_name=first,
-                    last_name=last, website=str(row.get("Website", "")))
-                report(i, len(df), "phones")
-                if i % self.checkpoint_every == 0:
-                    self._checkpoint(df, "phones")
-
-        if "export" in stages and self.exporter:
-            # Rename legacy Turkish columns before checking
-            from .crm_exporter import TURKISH_COLUMN_MAP
-            df = df.rename(columns={k: v for k, v in TURKISH_COLUMN_MAP.items()
-                                    if k in df.columns})
-            has_contacts = ("Email" in df.columns and
-                            df["Email"].astype(str).str.strip()
-                              .replace("nan", "").ne("").any())
-            if has_contacts:
-                # CRM export is a SEPARATE artifact — the enriched df stays
-                # intact so stage 6 (mail) and the main Excel keep Name,
-                # AI_Note and all pipeline columns.
-                self.crm_df = self.exporter.export(df, event_name or "Untitled Event")
-                self.crm_df.to_excel(self.output_dir / "crm_import.xlsx",
-                                     index=False, engine="openpyxl")
-                # Companion sheets: one GPT call per lead covers both.
-                self.subcat_df, self.loc_df = self.sheets.build(
-                    df, progress_cb=lambda i, n: report(i - 1, n, "export"))
-                if self.subcat_df is not None and len(self.subcat_df):
-                    self.subcat_df.to_excel(
-                        self.output_dir / "sub_category_maps.xlsx",
-                        index=False, engine="openpyxl")
-                if self.loc_df is not None and len(self.loc_df):
-                    self.loc_df.to_excel(self.output_dir / "locations.xlsx",
-                                         index=False, engine="openpyxl")
-            else:
-                from . import status
-                status.warn("Export skipped — no Email data found. Run stage 3 "
-                            "first, or upload a file that already contains "
-                            "contact columns (Email, Title, Name).")
-
-        if "bulk_emails" in stages:
-            rows = []
-            targets = (df[df.get("ICP_Fit", "Yes") != "No"]
-                       if "ICP_Fit" in df.columns else df)
-            for i, (_, row) in enumerate(targets.iterrows()):
-                found = self.contacts.find_bulk(
-                    str(row["Company"]),
-                    str(row.get("Website", "")),
-                    str(row.get("Country", "")),
-                    target=bulk_target,
+                st.caption(f"⚠️ Each revealed e-mail costs one Lusha credit — "
+                           f"up to {bulk_target} per company.")
+            if "qualify" in selected:
+                st.caption("**Product fit** — extra instructions for the AI "
+                           "(leave blank to use defaults)")
+                custom_icp_prompt = st.text_area(
+                    "ICP instructions",
+                    placeholder="e.g. Include craft distilleries even if small.",
+                    height=80, label_visibility="collapsed",
                 )
-                base = {k: v for k, v in row.to_dict().items()
-                        if k not in ("Name", "Title", "Email", "LinkedIn",
-                                     "Contact_Tier", "Match_Method",
-                                     "Lusha_Company", "Lusha_Domain",
-                                     "Credit_Charged")}
-                for c in found:
-                    rows.append({**base,
-                                 "Name":           c.get("name", ""),
-                                 "Title":          c.get("title", ""),
-                                 "Email":          c.get("email", ""),
-                                 "LinkedIn":       c.get("linkedin", ""),
-                                 "Contact_Tier":   c.get("tier", ""),
-                                 "Match_Method":   c.get("match_method", ""),
-                                 "Lusha_Company":  c.get("lusha_company", ""),
-                                 "Lusha_Domain":   c.get("lusha_domain", ""),
-                                 "Credit_Charged": c.get("credit_charged", ""),
-                                 "Needs_Review":   bool(row.get("Needs_Review", False))})
-                if not found:
-                    rows.append({**base, "Name": "", "Title": "", "Email": "",
-                                 "LinkedIn": "", "Contact_Tier": "",
-                                 "Match_Method": "not_found",
-                                 "Lusha_Company": "", "Lusha_Domain": "",
-                                 "Credit_Charged": "", "Needs_Review": True})
-                report(i, len(targets), "bulk_emails")
-                if i % self.checkpoint_every == 0 and rows:
-                    self._checkpoint(pd.DataFrame(rows), "bulk_emails")
-            df = pd.DataFrame(rows) if rows else df
+            if "mail" in selected:
+                st.caption("**Email** — extra instructions for the AI "
+                           "(leave blank to use defaults)")
+                custom_mail_prompt = st.text_area(
+                    "Mail instructions",
+                    placeholder="e.g. Mention our new matte black finish. Keep tone formal.",
+                    height=80, label_visibility="collapsed",
+                )
 
-        if "mail" in stages:
-            df = self.drafter.run(df, custom_instructions=custom_mail_prompt)
-            mail_cols = [c for c in ("Name", "Company", "Email",
-                                     "Email_Subject", "Email_Draft")
-                         if c in df.columns]
-            mail_df = df[df.get("Email_Draft", pd.Series([""] * len(df))) != ""][mail_cols].copy()
-            # Excel'de her hücrenin tek satırda okunması için newline'ları koru
-            # ama dosyayı gerçek xlsx olarak yaz (csv değil)
-            if len(mail_df):
+# ── Main ─────────────────────────────────────────────────────────────────────
+st.markdown("# 🎯 LeadWhop")
+st.caption("Company list in → CRM-ready qualified leads out")
+st.divider()
+
+uploaded = st.file_uploader(
+    "📂 Upload Excel (.xlsx)",
+    type=["xlsx"],
+)
+st.caption(
+    "**Required column:** Company &nbsp;·&nbsp; "
+    "**Optional:** Country, Website &nbsp;·&nbsp; "
+    "**For stages 5-6 only:** Email, Name, Title, AI_Note"
+)
+
+if uploaded:
+    preview = pd.read_excel(uploaded)
+    st.markdown(f"**{len(preview)} companies loaded** — preview:")
+    st.dataframe(preview.head(8), width="stretch", height=220)
+
+    # Validation
+    missing_keys = []
+    if not os.environ.get("OPENAI_API_KEY"):  missing_keys.append("OpenAI")
+    if not os.environ.get("SERPER_API_KEY"):  missing_keys.append("Serper")
+    if ("contacts" in selected or "phones" in selected
+            or "bulk_emails" in selected) and not os.environ.get("LUSHA_API_KEY"):
+        missing_keys.append("Lusha")
+
+    if missing_keys:
+        st.warning(f"⚠️ Add missing API keys in the sidebar: {', '.join(missing_keys)}")
+    elif not selected:
+        st.info("Select at least one stage in the sidebar.")
+    else:
+        st.divider()
+        run_col, _ = st.columns([1, 3])
+        with run_col:
+            run = st.button("▶️ Run pipeline", type="primary", width="stretch")
+
+        if run:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                tmp.write(uploaded.getvalue())
+                tmp_path = tmp.name
+
+            status   = st.empty()
+            progress = st.progress(0.0)
+
+            def cb(stage, i, n):
+                _, label, _ = stage_meta[stage]
+                progress.progress(i / n, text=f"**{label}** — {i} / {n}")
+
+            from leadwhop import status as lw_status
+            lw_status.clear()
+            try:
+                pipe   = Pipeline.from_config("config/settings.yaml")
+                result = pipe.run(tmp_path, stages=selected,
+                                  event_name=event_name, progress_cb=cb,
+                                  custom_icp_prompt=custom_icp_prompt,
+                                  custom_mail_prompt=custom_mail_prompt,
+                                  bulk_target=int(bulk_target))
+                progress.progress(1.0, text="✅ Done")
+                status.success("Pipeline complete!")
+
+                # Hide internal debug columns from the user-facing output
+                _hidden = ["Website_Debug"]
+                result = result.drop(columns=[c for c in _hidden
+                                              if c in result.columns])
+            except Exception as exc:
+                st.error(f"Pipeline error: {exc}")
+                for w in lw_status.get_warnings():
+                    st.error(f"🚨 {w}")
+                st.stop()
+
+            # API warnings (credits, auth, rate limits) — never silent
+            for w in lw_status.get_warnings():
+                st.error(f"🚨 {w}")
+
+            st.divider()
+
+            # ── Summary metrics ──────────────────────────────────────────
+            total    = len(result)
+            reviewed = int(result["Needs_Review"].sum()) if "Needs_Review" in result.columns else 0
+            verified = total - reviewed
+            with_email = int((result["Email"].notna() & (result["Email"] != "")).sum()) \
+                if "Email" in result.columns else 0
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.markdown(f'<div class="metric-card"><div class="value">{total}</div>'
+                        f'<div class="label">Total rows</div></div>', unsafe_allow_html=True)
+            m2.markdown(f'<div class="metric-card"><div class="value">{verified}</div>'
+                        f'<div class="label">Auto-verified</div></div>', unsafe_allow_html=True)
+            m3.markdown(f'<div class="metric-card"><div class="value">{reviewed}</div>'
+                        f'<div class="label">Needs review</div></div>', unsafe_allow_html=True)
+            m4.markdown(f'<div class="metric-card"><div class="value">{with_email}</div>'
+                        f'<div class="label">Emails found</div></div>', unsafe_allow_html=True)
+
+            st.markdown("###")
+
+            # ── Review expander ──────────────────────────────────────────
+            # ── Mail draft count ───────────────────────────────────
+            if "Email_Draft" in result.columns:
+                drafted = int((result["Email_Draft"].notna() &
+                               (result["Email_Draft"] != "")).sum())
+                if drafted:
+                    st.success(f"✉️ {drafted} personalised email drafts ready — see Email_Draft column below.")
+
+            if reviewed and "Needs_Review" in result.columns:
+                flagged = result[result["Needs_Review"] == True]  # noqa
+                with st.expander(f"⚠️ {reviewed} rows to double-check"):
+                    st.dataframe(flagged, width="stretch")
+
+            # ── Downloads: one place, one button per file ────────────────
+            crm_df    = getattr(pipe, "crm_df", None)
+            subcat_df = getattr(pipe, "subcat_df", None)
+            loc_df    = getattr(pipe, "loc_df", None)
+            mail_df   = getattr(pipe, "mail_df", None)
+
+            def _xlsx(df, widths=None):
+                """DataFrame -> formatted .xlsx bytes."""
                 import openpyxl
                 from openpyxl.utils import get_column_letter
-                out_path = self.output_dir / "mail_drafts.xlsx"
-                mail_df.to_excel(out_path, index=False, engine="openpyxl")
-                # Format: wrap_text on Email_Draft, wide columns
-                wb = openpyxl.load_workbook(out_path)
+                buf = io.BytesIO()
+                df.to_excel(buf, index=False, engine="openpyxl")
+                buf.seek(0)
+                wb = openpyxl.load_workbook(buf)
                 ws = wb.active
-                col_widths = {
-                    "Name": 22, "Company": 28, "Email": 35,
-                    "Email_Subject": 55, "Email_Draft": 80,
-                }
-                headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
-                for ci, header in enumerate(headers, start=1):
-                    ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(header, 20)
-                    for row in range(2, ws.max_row + 1):
-                        cell = ws.cell(row, ci)
-                        cell.alignment = openpyxl.styles.Alignment(
+                widths = widths or {}
+                for ci in range(1, ws.max_column + 1):
+                    header = ws.cell(1, ci).value
+                    ws.column_dimensions[get_column_letter(ci)].width = \
+                        widths.get(header, 22)
+                    ws.cell(1, ci).font = openpyxl.styles.Font(
+                        bold=True, color="FFFFFF")
+                    ws.cell(1, ci).fill = openpyxl.styles.PatternFill(
+                        "solid", fgColor="0D3B44")
+                    for r in range(2, ws.max_row + 1):
+                        ws.cell(r, ci).alignment = openpyxl.styles.Alignment(
                             wrap_text=True, vertical="top")
-                wb.save(out_path)
-            self.mail_df = mail_df
-        else:
-            self.mail_df = None
+                out = io.BytesIO()
+                wb.save(out)
+                return out.getvalue()
 
-        out_path = self.output_dir / "leadwhop_output.xlsx"
-        df.to_excel(out_path, index=False)
-        return df
+            def _multi_xlsx(sheets, widths_map=None):
+                """[(sheet_name, df)] -> one workbook, one tab per frame."""
+                import openpyxl
+                from openpyxl.utils import get_column_letter
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    for sheet_name, df_out in sheets:
+                        df_out.to_excel(writer, index=False,
+                                        sheet_name=sheet_name[:31])
+                buf.seek(0)
+                wb = openpyxl.load_workbook(buf)
+                widths_map = widths_map or {}
+                for ws in wb.worksheets:
+                    widths = widths_map.get(ws.title, {})
+                    for ci in range(1, ws.max_column + 1):
+                        header = ws.cell(1, ci).value
+                        ws.column_dimensions[get_column_letter(ci)].width = \
+                            widths.get(header, 22)
+                        ws.cell(1, ci).font = openpyxl.styles.Font(
+                            bold=True, color="FFFFFF")
+                        ws.cell(1, ci).fill = openpyxl.styles.PatternFill(
+                            "solid", fgColor="0D3B44")
+                        for r in range(2, ws.max_row + 1):
+                            ws.cell(r, ci).alignment = \
+                                openpyxl.styles.Alignment(
+                                    wrap_text=True, vertical="top")
+                out = io.BytesIO()
+                wb.save(out)
+                return out.getvalue()
+
+            # ── Download buttons: CRM bundle is ONE workbook, 3 sheets ───
+            files = [("📊 Lusha output",
+                      _xlsx(result), "leadwhop_output.xlsx")]
+
+            if crm_df is not None and len(crm_df):
+                crm_sheets = [("CRM Lead Import", crm_df)]
+                if subcat_df is not None and len(subcat_df):
+                    crm_sheets.append(("Sub Category Maps", subcat_df))
+                if loc_df is not None and len(loc_df):
+                    crm_sheets.append(("Locations", loc_df))
+                files.append(("🗂️ CRM package",
+                              _multi_xlsx(crm_sheets), "crm_package.xlsx"))
+
+            if mail_df is not None and len(mail_df):
+                files.append(("✉️ Mail drafts",
+                              _xlsx(mail_df,
+                                    {"Name": 22, "Company": 28, "Email": 38,
+                                     "Email_Subject": 55, "Email_Draft": 90}),
+                              "mail_drafts.xlsx"))
+
+            st.markdown("### Download")
+            cols = st.columns(len(files))
+            for col, (label, payload, fname) in zip(cols, files):
+                col.download_button(
+                    label, payload, file_name=fname, width="stretch",
+                )
+
+            # ── Preview tables ───────────────────────────────────────────
+            st.markdown("### Results")
+            previews = [("📊 Lusha output", result)]
+            if crm_df is not None and len(crm_df):
+                previews.append(("🗂️ CRM Lead Import", crm_df))
+            if subcat_df is not None and len(subcat_df):
+                previews.append(("🏷️ Sub Category Maps", subcat_df))
+            if loc_df is not None and len(loc_df):
+                previews.append(("📍 Locations", loc_df))
+            if mail_df is not None and len(mail_df):
+                previews.append(("✉️ Mail drafts", mail_df))
+            tabs = st.tabs([label for label, _ in previews])
+            for tab, (_, df_out) in zip(tabs, previews):
+                with tab:
+                    st.dataframe(df_out, width="stretch", height=350)
