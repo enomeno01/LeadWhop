@@ -258,9 +258,67 @@ def domain_variants(domain: str, country: str, tld_map: dict) -> list[str]:
 
 # ── main class ────────────────────────────────────────────────────────────────
 
+def _rank_people_by_fit(llm, people: list[dict]) -> list[dict]:
+    """Order candidates by how relevant their title is to buying GLASS packaging.
+
+    The tier keywords already restrict *which* people come back, but a single
+    tier still mixes very different buyers: a "Packaging Buyer" and an
+    "IT Procurement Manager" both match Tier 1 on the word "procurement", yet
+    only one of them ever purchases glass. Keyword rules cannot tell them
+    apart; the model can.
+
+    The model only REORDERS the list it is given — it never invents, drops or
+    judges anyone as unsuitable. If the model is unavailable or errors, the
+    original Lusha order is returned unchanged, so the pipeline never breaks.
+    """
+    if llm is None or len(people) <= 1:
+        return people
+
+    titles = []
+    for idx, person in enumerate(people):
+        titles.append(f"{idx}: {_get_title(person)}")
+
+    prompt = (
+        "You rank sales contacts for a company that sells EMPTY GLASS bottles "
+        "and jars to food and beverage producers. Given the numbered job "
+        "titles below, order them from MOST to LEAST likely to be the person "
+        "who decides on or influences the purchase of glass packaging / "
+        "bottles / jars / raw packaging materials.\n\n"
+        "Rank higher: packaging buyers, procurement/purchasing for materials, "
+        "sourcing, supply chain, operations, production, and — for small "
+        "producers — owners or founders who run purchasing themselves.\n"
+        "Rank lower: roles that buy unrelated things (IT, media, marketing, "
+        "HR, facilities, real estate, travel) and purely financial or "
+        "administrative roles.\n\n"
+        "Titles:\n" + "\n".join(titles) + "\n\n"
+        'Return ONLY strict JSON: {"order": [list of the indices, best first]}. '
+        "Include every index exactly once."
+    )
+    try:
+        res = llm.json_call(
+            system="You are a precise B2B sales analyst. Return strict JSON only.",
+            user=prompt,
+            max_tokens=300,
+        )
+        order = res.get("order", [])
+        seen, ranked = set(), []
+        for i in order:
+            if isinstance(i, int) and 0 <= i < len(people) and i not in seen:
+                seen.add(i)
+                ranked.append(people[i])
+        # Append anyone the model forgot, preserving original order.
+        for idx, person in enumerate(people):
+            if idx not in seen:
+                ranked.append(person)
+        return ranked if ranked else people
+    except Exception:
+        return people
+
+
 class ContactFinder:
-    def __init__(self, tiers: list[dict], settings: dict):
+    def __init__(self, tiers: list[dict], settings: dict, llm=None):
         self.tiers = tiers
+        self.llm = llm
         self.headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -321,6 +379,8 @@ class ContactFinder:
                 if top_company_name is None:
                     top_company_name = _get_company_name(people[0])
                     print(f"    🎯 Anchored to: {top_company_name}")
+
+                people = _rank_people_by_fit(self.llm, people)
 
                 for person in people:
                     if len(found) >= target:
@@ -401,6 +461,11 @@ class ContactFinder:
             if top_company_name is None:
                 top_company_name = _get_company_name(people[0])
                 print(f"    🎯 Anchored to: {top_company_name}")
+
+            # Reorder this tier's candidates so the best-fit title is tried
+            # first — the glass buyer ahead of the IT buyer. Falls back to the
+            # original Lusha order when no model is available.
+            people = _rank_people_by_fit(self.llm, people)
 
             added = 0
             for person in people:
