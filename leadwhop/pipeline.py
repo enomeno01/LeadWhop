@@ -41,7 +41,7 @@ class Pipeline:
                              settings["rate_limits"]["sleep_between_calls"])
         self.finder = WebsiteFinder(self.llm, settings)
         self.qualifier = Qualifier(self.llm, settings)
-        self.contacts = ContactFinder(tiers, settings)
+        self.contacts = ContactFinder(tiers, settings, llm=self.llm)
         self.phones = PhoneEnricher(settings)
         self.exporter = (CRMExporter(self.llm, crm_mapping, llm_cheap=self.llm_cheap)
                          if crm_mapping else None)
