@@ -35,7 +35,7 @@ pipeline:
   checkpoint_every: 5
   cache_dir: .cache
   output_dir: outputs
-  max_contacts_per_company: 2
+  max_contacts_per_company: 1
 
 # --- ICP qualification ---
 icp:
