@@ -22,6 +22,8 @@ import re
 import unicodedata
 
 import difflib
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 
 from .llm import LLM
@@ -544,6 +546,10 @@ class CRMExporter:
         # llm_cheap -> the four picklist classifiers (closed answer set)
         self.llm = llm
         self.llm_cheap = llm_cheap or llm
+        # How many companies to process at once. Each unit of work is a network
+        # call that spends most of its time waiting, so threads (not processes)
+        # give a large speed-up. Ordered output is preserved regardless.
+        self.max_workers = 8
         m = mapping or {}
         self.record_type_id     = m.get("record_type_id", "012WP0000001n6jYAA")
         self.business_category  = m.get("business_category", "Distributor")
@@ -715,6 +721,20 @@ Return ONLY valid JSON with exactly these keys:
 
     # ---- main --------------------------------------------------------------
 
+    def _pmap(self, fn, items):
+        """Apply fn to every item concurrently, returning results IN ORDER.
+
+        ThreadPoolExecutor.map preserves input order in its output, so the
+        rows never get shuffled — company N's result always lands in row N.
+        A single failing item raises, exactly as the old sequential loop did.
+        """
+        items = list(items)
+        if not items:
+            return []
+        workers = max(1, min(self.max_workers, len(items)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            return list(ex.map(fn, items))
+
     def export(self, df: pd.DataFrame, event_name: str) -> pd.DataFrame:
         # Accept Turkish column names from legacy files
         df = df.rename(columns={k: v for k, v in TURKISH_COLUMN_MAP.items()
@@ -750,15 +770,15 @@ Return ONLY valid JSON with exactly these keys:
         title   = df.get("Title",   pd.Series([""] * len(df)))
 
         print("   ➤ 1/4 Function eşleştiriliyor...")
-        out["Function_Picklist__c"] = title.apply(self.business_function)
+        out["Function_Picklist__c"] = self._pmap(self.business_function, title)
         print("   ➤ 2/4 Industry eşleştiriliyor...")
-        out["Industry"] = ai_note.apply(self.industry)
+        out["Industry"] = self._pmap(self.industry, ai_note)
         print("   ➤ 3/4 Sub-Industry eşleştiriliyor...")
-        out["Sub_Industry_Form__c"] = ai_note.apply(self.sub_industry)
+        out["Sub_Industry_Form__c"] = self._pmap(self.sub_industry, ai_note)
         # Guarantee Industry consistency with Sub-Industry prefix
         out["Industry"] = out["Sub_Industry_Form__c"].apply(industry_from_subindustry)
         print("   ➤ 4/4 Kıdem seviyeleri eşleştiriliyor...")
-        out["Level__c"] = title.apply(self.seniority)
+        out["Level__c"] = self._pmap(self.seniority, title)
 
         out["Business_Category__c"] = self.business_category
         out["Event_Name__c"]        = event_name
@@ -771,17 +791,13 @@ Return ONLY valid JSON with exactly these keys:
 
         # ── Company profile: 4 fields, 1 GPT call per company ──
         print("   ➤ Company profiles (revenue, employees, positioning, volume)...")
-        profile_cols = {
-            "AnnualRevenue": [], "NumberOfEmployees": [],
-            "Market_Positioning__c": [],
-        }
         companies = df.get("Company", pd.Series([""] * len(df)))
-        countries  = df.get("Country", pd.Series([""] * len(df)))
-        for i, (comp, ctry, note) in enumerate(zip(companies, countries, ai_note)):
-            prof = self.company_profile(str(comp), str(ctry), str(note))
-            for col in profile_cols:
-                profile_cols[col].append(prof.get(col, ""))
-        for col, vals in profile_cols.items():
-            out[col] = vals
+        countries = df.get("Country", pd.Series([""] * len(df)))
+        triples = list(zip(companies.astype(str), countries.astype(str),
+                           ai_note.astype(str)))
+        profiles = self._pmap(
+            lambda t: self.company_profile(t[0], t[1], t[2]), triples)
+        for col in ("AnnualRevenue", "NumberOfEmployees", "Market_Positioning__c"):
+            out[col] = [p.get(col, "") for p in profiles]
 
         return out[FINAL_COLUMN_ORDER]
