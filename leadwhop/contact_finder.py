@@ -1,524 +1,803 @@
-"""Stage 3 — decision-maker discovery (Lusha Prospecting API).
+"""Stage 5 — CRM-ready export (exact port of the production Salesforce script).
 
-Birebir orijinal notebook mantığı — 3 arama stratejisi:
+Output columns (exact order):
+    FirstName, LastName, Company, Website, Email, Title, Country, Industry,
+    Business_Category__c, Function_Picklist__c, Sub_Industry_Form__c,
+    Level__c, Market_Positioning__c, Event_Name__c, RecordTypeID
 
-1. DOMAIN FILTER  → companies.include.domains ile arar (en kesin)
-2. SEARCH TEXT    → domain'i searchText olarak arar (fallback 1)
-3. COMPANY NAME   → şirket adıyla arar + company_name_match filtresi (fallback 2)
-
-Domain araması sonuç verirse isim araması hiç yapılmaz.
-İsim aramasında ltd/inc/corp/llc gibi ekler normalize edilir,
-şirket adından herhangi bir token diğerinde geçiyorsa eşleşme kabul edilir,
-yoksa SequenceMatcher >= 0.72 şartı aranır.
+Design notes (mirrors the original):
+- TEXT-based picklist values everywhere (not Salesforce record IDs).
+- Country is matched to the Salesforce Country picklist text via
+  normalize -> alias table (Turkish names & abbreviations) -> exact ->
+  difflib fuzzy (cutoff 0.78). Unmatched countries are left EMPTY on
+  purpose, to avoid Salesforce import errors from wrong values.
+- Industry is re-derived from the Sub-Industry prefix at the end, so the
+  two columns can never contradict each other.
+- All GPT verdicts are disk-cached (persistent version of the original
+  in-memory dictionaries).
 """
 from __future__ import annotations
 
-import os
 import re
-import time
-from difflib import SequenceMatcher
+import unicodedata
 
-import requests
+import difflib
+from concurrent.futures import ThreadPoolExecutor
 
-from .utils import clean_domain
-from . import status
+import pandas as pd
 
-SEARCH_URL = "https://api.lusha.com/prospecting/contact/search"
-ENRICH_URL = "https://api.lusha.com/v2/person"
+from .llm import LLM
 
-SLEEP_BETWEEN_TIERS  = 1.0
-SLEEP_BEFORE_ENRICH  = 1.0
+# ==========================================================================
+# Picklist values (verbatim from production)
+# ==========================================================================
+
+FUNCTION_VALUES = [
+    "GCA Strategy and Corporate Management",
+    "GCA Procurement (Purchasing)",
+    "GCA Sales",
+    "GCA Marketing",
+    "GCA Planning",
+    "GCA Production (Manufacturing)",
+    "GCA Maintenance",
+    "GCA Warehouse & Logistics",
+    "GCA Finance",
+    "GCA Information Technologies (IT)",
+    "GCA Human Resources (HR)",
+    "GCA Business Development",
+    "Global Procurement Category Manager Glass",
+]
+
+INDUSTRY_VALUES = ["Food & Beverage", "Non-Food Related Manufacturing"]
+
+SUB_INDUSTRY_VALUES = [
+    "Food & Beverage - Manufacture of beer",
+    "Food & Beverage - Manufacture of dairy products",
+    "Food & Beverage - Manufacture of non-alcoholic beverages",
+    "Food & Beverage - Manufacture of other food products",
+    "Food & Beverage - Manufacture of spirits",
+    "Food & Beverage - Manufacture of vegetable and animal oils and fats",
+    "Food & Beverage - Manufacture of wine",
+    "Food & Beverage - Processing and preserving of fruit and vegetables",
+    "Food & Beverage - Processing and preserving of meat / seafood",
+    "Non-Food Related Manufacturing - Manufacture of chemicals and chemical products (soap, candle, etc.)",
+    "Non-Food Related Manufacturing - Manufacture of glass and glass products",
+    "Non-Food Related Manufacturing - Other Manufacturing",
+    "Non-Food Related Manufacturing - Perfumery & Cosmetics",
+]
+
+LEVEL_VALUES = [
+    "Board Level", "C-Suite Level", "Upper Managerial Level",
+    "Manager Level", "Mid Level", "Entry Level",
+]
+
+COUNTRY_VALUES = [x.strip() for x in """
+Andorra
+United Arab Emirates
+Afghanistan
+Antigua and Barbuda
+Anguilla
+Albania
+Armenia
+Angola
+Antarctica
+Argentina
+Austria
+Australia
+Aruba
+Aland Islands
+Azerbaijan
+Bosnia and Herzegovina
+Barbados
+Bangladesh
+Belgium
+Burkina Faso
+Bulgaria
+Bahrain
+Burundi
+Benin
+Saint Barthélemy
+Bermuda
+Brunei Darussalam
+Bolivia, Plurinational State of
+Bonaire, Sint Eustatius and Saba
+Brazil
+Bahamas
+Bhutan
+Bouvet Island
+Botswana
+Belarus
+Belize
+Canada
+Cocos (Keeling) Islands
+Congo, the Democratic Republic of the
+Central African Republic
+Congo
+Switzerland
+Cote d'Ivoire
+Côte d'Ivoire
+Cook Islands
+Chile
+Cameroon
+China
+Colombia
+Costa Rica
+Cuba
+Cape Verde
+Curaçao
+Christmas Island
+Cyprus
+Czech Republic
+Germany
+Djibouti
+Denmark
+Dominica
+Dominican Republic
+Algeria
+Ecuador
+Estonia
+Egypt
+Western Sahara
+Eritrea
+Spain
+Ethiopia
+Finland
+Fiji
+Falkland Islands (Malvinas)
+Faroe Islands
+France
+Gabon
+United Kingdom
+Grenada
+Georgia
+French Guiana
+Guernsey
+Ghana
+Gibraltar
+Greenland
+Gambia
+Guinea
+Guadeloupe
+Equatorial Guinea
+Greece
+South Georgia and the South Sandwich Islands
+Guatemala
+Guinea-Bissau
+Guyana
+Heard Island and McDonald Islands
+Honduras
+Croatia
+Haiti
+Hungary
+Indonesia
+Ireland
+Israel
+Isle of Man
+India
+British Indian Ocean Territory
+Iraq
+Iran, Islamic Republic of
+Iceland
+Italy
+Jersey
+Jamaica
+Jordan
+Japan
+Kenya
+Kyrgyzstan
+Cambodia
+Kiribati
+Comoros
+Saint Kitts and Nevis
+Korea, Democratic People's Republic of
+Korea, Republic of
+Kosova
+Kuwait
+Cayman Islands
+Kazakhstan
+Lao People's Democratic Republic
+Lebanon
+Saint Lucia
+Liechtenstein
+Sri Lanka
+Liberia
+Lesotho
+Lithuania
+Luxembourg
+Latvia
+Libyan Arab Jamahiriya
+Morocco
+Monaco
+Moldova, Republic of
+Montenegro
+Saint Martin (French part)
+Madagascar
+Macedonia, the former Yugoslav Republic of
+Mali
+Myanmar
+Mongolia
+Macao
+Martinique
+Mauritania
+Montserrat
+Malta
+Mauritius
+Maldives
+Malawi
+Mexico
+Malaysia
+Mozambique
+Namibia
+New Caledonia
+Niger
+Norfolk Island
+Nigeria
+Nicaragua
+Netherlands
+Norway
+Nepal
+Nauru
+Niue
+New Zealand
+Oman
+Panama
+Peru
+French Polynesia
+Papua New Guinea
+Philippines
+Pakistan
+Poland
+Saint Pierre and Miquelon
+Pitcairn
+Puerto Rico
+Palestinian Territory, Occupied
+Portugal
+Paraguay
+Qatar
+Reunion
+Romania
+Serbia
+Russian Federation
+Rwanda
+Saudi Arabia
+Solomon Islands
+Seychelles
+Sudan
+Sweden
+Singapore
+Saint Helena, Ascension and Tristan da Cunha
+Slovenia
+Svalbard and Jan Mayen
+Slovakia
+Sierra Leone
+San Marino
+Senegal
+Somalia
+Suriname
+South Sudan
+Sao Tome and Principe
+El Salvador
+Sint Maarten (Dutch part)
+Syrian Arab Republic
+Swaziland
+Turks and Caicos Islands
+Chad
+French Southern Territories
+Togo
+Thailand
+Tajikistan
+Tokelau
+Timor-Leste
+Turkmenistan
+Tunisia
+Tonga
+Turkey
+Trinidad and Tobago
+Tuvalu
+Chinese Taipei
+Tanzania, United Republic of
+Ukraine
+Uganda
+United States
+Uruguay
+Uzbekistan
+Holy See (Vatican City State)
+Saint Vincent and the Grenadines
+Venezuela, Bolivarian Republic of
+Virgin Islands, British
+Viet Nam
+Vanuatu
+Wallis and Futuna
+Samoa
+Yemen
+Mayotte
+South Africa
+Zambia
+Zimbabwe
+""".splitlines() if x.strip()]
+
+COUNTRY_ALIASES = {
+    "usa": "United States", "us": "United States", "u.s.": "United States",
+    "u.s.a.": "United States", "america": "United States",
+    "united states of america": "United States", "abd": "United States",
+    "amerika": "United States",
+    "amerika birleşik devletleri": "United States",
+    "amerikan birleşik devletleri": "United States",
+    "uk": "United Kingdom", "u.k.": "United Kingdom",
+    "great britain": "United Kingdom", "britain": "United Kingdom",
+    "england": "United Kingdom", "ingiltere": "United Kingdom",
+    "birleşik krallık": "United Kingdom",
+    "scotland": "United Kingdom", "iskoçya": "United Kingdom",
+    "wales": "United Kingdom", "galler": "United Kingdom",
+    "northern ireland": "United Kingdom", "kuzey irlanda": "United Kingdom",
+    "uae": "United Arab Emirates", "u.a.e.": "United Arab Emirates",
+    "emirates": "United Arab Emirates", "bae": "United Arab Emirates",
+    "birleşik arap emirlikleri": "United Arab Emirates",
+    "andorra": "Andorra", "afganistan": "Afghanistan",
+    "antigua ve barbuda": "Antigua and Barbuda", "anguilla": "Anguilla",
+    "arnavutluk": "Albania", "ermenistan": "Armenia", "angola": "Angola",
+    "antarktika": "Antarctica", "arjantin": "Argentina",
+    "avusturya": "Austria", "avustralya": "Australia", "aruba": "Aruba",
+    "aland adaları": "Aland Islands", "azerbaycan": "Azerbaijan",
+    "bosna hersek": "Bosnia and Herzegovina",
+    "bosna ve hersek": "Bosnia and Herzegovina", "barbados": "Barbados",
+    "bangladeş": "Bangladesh", "belçika": "Belgium",
+    "burkina faso": "Burkina Faso", "bulgaristan": "Bulgaria",
+    "bahreyn": "Bahrain", "burundi": "Burundi", "benin": "Benin",
+    "saint barthelemy": "Saint Barthélemy", "bermuda": "Bermuda",
+    "brunei": "Brunei Darussalam",
+    "bolivya": "Bolivia, Plurinational State of",
+    "bonaire sint eustatius ve saba": "Bonaire, Sint Eustatius and Saba",
+    "brezilya": "Brazil", "bahamalar": "Bahamas", "butan": "Bhutan",
+    "bouvet adası": "Bouvet Island", "botsvana": "Botswana",
+    "belarus": "Belarus", "beyaz rusya": "Belarus", "belize": "Belize",
+    "kanada": "Canada", "cocos adaları": "Cocos (Keeling) Islands",
+    "kongo demokratik cumhuriyeti": "Congo, the Democratic Republic of the",
+    "demokratik kongo cumhuriyeti": "Congo, the Democratic Republic of the",
+    "orta afrika cumhuriyeti": "Central African Republic", "kongo": "Congo",
+    "isviçre": "Switzerland", "fildişi sahili": "Côte d'Ivoire",
+    "cote d'ivoire": "Côte d'Ivoire", "cook adaları": "Cook Islands",
+    "şili": "Chile", "kamerun": "Cameroon", "çin": "China",
+    "kolombiya": "Colombia", "kosta rika": "Costa Rica", "kuba": "Cuba",
+    "cape verde": "Cape Verde", "yeşil burun": "Cape Verde",
+    "curaçao": "Curaçao", "curacao": "Curaçao",
+    "christmas adası": "Christmas Island", "kıbrıs": "Cyprus",
+    "çek cumhuriyeti": "Czech Republic", "çekya": "Czech Republic",
+    "almanya": "Germany", "cibuti": "Djibouti", "danimarka": "Denmark",
+    "dominika": "Dominica", "dominik cumhuriyeti": "Dominican Republic",
+    "cezayir": "Algeria", "ekvador": "Ecuador", "estonya": "Estonia",
+    "mısır": "Egypt", "batı sahra": "Western Sahara", "eritre": "Eritrea",
+    "ispanya": "Spain", "etiyopya": "Ethiopia", "finlandiya": "Finland",
+    "fiji": "Fiji", "falkland adaları": "Falkland Islands (Malvinas)",
+    "faroe adaları": "Faroe Islands", "fransa": "France", "gabon": "Gabon",
+    "grenada": "Grenada", "gürcistan": "Georgia",
+    "fransız guyanası": "French Guiana", "guernsey": "Guernsey",
+    "gana": "Ghana", "cebelitarık": "Gibraltar", "grönland": "Greenland",
+    "gambiya": "Gambia", "gine": "Guinea", "guadeloupe": "Guadeloupe",
+    "ekvator ginesi": "Equatorial Guinea", "yunanistan": "Greece",
+    "güney georgia ve güney sandwich adaları":
+        "South Georgia and the South Sandwich Islands",
+    "guatemala": "Guatemala", "gine bissau": "Guinea-Bissau",
+    "guyana": "Guyana",
+    "heard adası ve mcdonald adaları": "Heard Island and McDonald Islands",
+    "honduras": "Honduras", "hırvatistan": "Croatia", "haiti": "Haiti",
+    "macaristan": "Hungary", "endonezya": "Indonesia", "irlanda": "Ireland",
+    "israil": "Israel", "man adası": "Isle of Man", "hindistan": "India",
+    "britanya hint okyanusu toprakları": "British Indian Ocean Territory",
+    "irak": "Iraq", "iran": "Iran, Islamic Republic of",
+    "izlanda": "Iceland", "italya": "Italy", "jersey": "Jersey",
+    "jamaika": "Jamaica", "ürdün": "Jordan", "japonya": "Japan",
+    "kenya": "Kenya", "kırgızistan": "Kyrgyzstan", "kamboçya": "Cambodia",
+    "kiribati": "Kiribati", "komorlar": "Comoros",
+    "saint kitts ve nevis": "Saint Kitts and Nevis",
+    "kuzey kore": "Korea, Democratic People's Republic of",
+    "güney kore": "Korea, Republic of", "kore": "Korea, Republic of",
+    "kosova": "Kosova", "kuveyt": "Kuwait",
+    "cayman adaları": "Cayman Islands", "kazakistan": "Kazakhstan",
+    "laos": "Lao People's Democratic Republic", "lübnan": "Lebanon",
+    "saint lucia": "Saint Lucia", "lihtenştayn": "Liechtenstein",
+    "sri lanka": "Sri Lanka", "liberya": "Liberia", "lesotho": "Lesotho",
+    "litvanya": "Lithuania", "lüksemburg": "Luxembourg",
+    "letonya": "Latvia", "libya": "Libyan Arab Jamahiriya",
+    "fas": "Morocco", "monako": "Monaco",
+    "moldova": "Moldova, Republic of", "karadağ": "Montenegro",
+    "saint martin": "Saint Martin (French part)",
+    "madagaskar": "Madagascar",
+    "makedonya": "Macedonia, the former Yugoslav Republic of",
+    "kuzey makedonya": "Macedonia, the former Yugoslav Republic of",
+    "mali": "Mali", "myanmar": "Myanmar", "burma": "Myanmar",
+    "moğolistan": "Mongolia", "makao": "Macao", "martinik": "Martinique",
+    "moritanya": "Mauritania", "montserrat": "Montserrat", "malta": "Malta",
+    "mauritius": "Mauritius", "maldivler": "Maldives", "malavi": "Malawi",
+    "meksika": "Mexico", "malezya": "Malaysia", "mozambik": "Mozambique",
+    "namibya": "Namibia", "yeni kaledonya": "New Caledonia",
+    "nijer": "Niger", "norfolk adası": "Norfolk Island",
+    "nijerya": "Nigeria", "nikaragua": "Nicaragua",
+    "hollanda": "Netherlands", "norveç": "Norway", "nepal": "Nepal",
+    "nauru": "Nauru", "niue": "Niue", "yeni zelanda": "New Zealand",
+    "umman": "Oman", "panama": "Panama", "peru": "Peru",
+    "fransız polinezyası": "French Polynesia",
+    "papua yeni gine": "Papua New Guinea", "filipinler": "Philippines",
+    "pakistan": "Pakistan", "polonya": "Poland",
+    "saint pierre ve miquelon": "Saint Pierre and Miquelon",
+    "pitcairn": "Pitcairn", "porto riko": "Puerto Rico",
+    "filistin": "Palestinian Territory, Occupied", "portekiz": "Portugal",
+    "paraguay": "Paraguay", "katar": "Qatar", "reunion": "Reunion",
+    "réunion": "Reunion", "romanya": "Romania", "sırbistan": "Serbia",
+    "rusya": "Russian Federation",
+    "russian federation": "Russian Federation", "ruanda": "Rwanda",
+    "suudi arabistan": "Saudi Arabia",
+    "solomon adaları": "Solomon Islands", "seyşeller": "Seychelles",
+    "sudan": "Sudan", "isveç": "Sweden", "singapur": "Singapore",
+    "saint helena": "Saint Helena, Ascension and Tristan da Cunha",
+    "slovenya": "Slovenia",
+    "svalbard ve jan mayen": "Svalbard and Jan Mayen",
+    "slovakya": "Slovakia", "sierra leone": "Sierra Leone",
+    "san marino": "San Marino", "senegal": "Senegal", "somali": "Somalia",
+    "surinam": "Suriname", "güney sudan": "South Sudan",
+    "sao tome ve principe": "Sao Tome and Principe",
+    "el salvador": "El Salvador",
+    "sint maarten": "Sint Maarten (Dutch part)",
+    "suriye": "Syrian Arab Republic", "svaziland": "Swaziland",
+    "esvatini": "Swaziland",
+    "turks ve caicos adaları": "Turks and Caicos Islands", "çad": "Chad",
+    "fransız güney toprakları": "French Southern Territories",
+    "togo": "Togo", "tayland": "Thailand", "tacikistan": "Tajikistan",
+    "tokelau": "Tokelau", "timor leste": "Timor-Leste",
+    "doğu timor": "Timor-Leste", "türkmenistan": "Turkmenistan",
+    "tunus": "Tunisia", "tonga": "Tonga", "türkiye": "Turkey",
+    "turkiye": "Turkey", "tr": "Turkey",
+    "trinidad ve tobago": "Trinidad and Tobago", "tuvalu": "Tuvalu",
+    "tayvan": "Chinese Taipei", "çin taypesi": "Chinese Taipei",
+    "chinese taipei": "Chinese Taipei",
+    "tanzanya": "Tanzania, United Republic of", "ukrayna": "Ukraine",
+    "uganda": "Uganda", "uruguay": "Uruguay", "özbekistan": "Uzbekistan",
+    "vatikan": "Holy See (Vatican City State)",
+    "saint vincent ve grenadinler": "Saint Vincent and the Grenadines",
+    "venezuela": "Venezuela, Bolivarian Republic of",
+    "ingiliz virgin adaları": "Virgin Islands, British",
+    "british virgin islands": "Virgin Islands, British",
+    "vietnam": "Viet Nam", "viet nam": "Viet Nam", "vanuatu": "Vanuatu",
+    "wallis ve futuna": "Wallis and Futuna", "samoa": "Samoa",
+    "yemen": "Yemen", "mayotte": "Mayotte", "güney afrika": "South Africa",
+    "zambiya": "Zambia", "zimbabve": "Zimbabwe",
+}
+
+FINAL_COLUMN_ORDER = [
+    "FirstName", "LastName", "Company", "Website", "Email", "Title",
+    "Phone", "LinkedIn_URL__c", "Country", "Industry",
+    "Business_Category__c", "Function_Picklist__c", "Sub_Industry_Form__c",
+    "Level__c", "Market_Positioning__c", "AnnualRevenue",
+    "NumberOfEmployees", "Event_Name__c", "RecordTypeID",
+]
+
+MARKET_POSITIONING_VALUES = [
+    "Market Maker",
+    "Market Leader",
+    "Strong Player",
+    "Established Player",
+    "Emerging Contender",
+]
+
+# Turkish input column names -> pipeline column names (export-only uploads)
+TURKISH_COLUMN_MAP = {
+    "Şirket": "Company", "Domain": "Website", "E-posta": "Email",
+    "Unvan": "Title", "İsim": "Name", "AI_Notu": "AI_Note", "Ülke": "Country",
+}
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ==========================================================================
+# Helpers
+# ==========================================================================
 
-def _safe(val) -> str:
-    if val is None:
+def normalize_text(text) -> str:
+    if pd.isna(text):
         return ""
-    try:
-        import pandas as pd
-        if pd.isna(val):
-            return ""
-    except Exception:
-        pass
-    return str(val).strip()
+    text = str(text).strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def _smart_wait(response_text: str) -> None:
-    """Reads Lusha's 'Reset in N seconds' hint; falls back to 20s."""
-    match = re.search(r"Reset in (\d+) seconds", response_text or "")
-    wait = int(match.group(1)) + 10 if match else 20
-    print(f"    ⏳ Rate limited — waiting {wait}s")
-    time.sleep(wait)
+COUNTRY_NORMALIZED = {normalize_text(c): c for c in COUNTRY_VALUES}
+COUNTRY_ALIASES_NORMALIZED = {normalize_text(k): v for k, v in COUNTRY_ALIASES.items()}
 
 
-def _normalize(text: str) -> str:
-    """Strip legal suffixes and punctuation for name comparison."""
-    REMOVE = {"llc","inc","co","company","corp","corporation",
-               "ltd","limited","the","and","group","holding","holdings"}
-    text = _safe(text).lower()
-    text = text.replace("&", " and ")
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    words = [w for w in text.split() if w and w not in REMOVE]
-    return " ".join(words)
+def split_name(full_name) -> tuple[str, str]:
+    full_name = str(full_name or "").strip()
+    if not full_name or full_name in ("-", "nan"):
+        return "Bilinmiyor", "Bilinmiyor"
+    parts = full_name.rsplit(" ", 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else (parts[0], "Bilinmiyor")
 
 
-def _company_match(a: str, b: str) -> bool:
-    """True if the two company names refer to the same company.
-
-    Matches if:
-    - either normalized name is a substring of the other, OR
-    - SequenceMatcher ratio >= 0.72
-    Unreadable names are treated as match (don't drop the contact).
-    """
-    a_n = _normalize(a)
-    b_n = _normalize(b)
-    if not a_n or not b_n:
-        return True
-    if a_n == b_n or a_n in b_n or b_n in a_n:
-        return True
-    return SequenceMatcher(None, a_n, b_n).ratio() >= 0.72
-
-
-# ── field extractors (mirrors every key Lusha has ever used) ──────────────────
-
-def _get_domain(person: dict) -> str:
-    raw = (person.get("fqdn") or person.get("companyDomain")
-           or person.get("company_domain") or person.get("domain")
-           or person.get("website") or person.get("companyWebsite")
-           or person.get("companyUrl") or person.get("url"))
-    if raw:
-        return clean_domain(raw) or "-"
-    co = person.get("company") or {}
-    raw = (co.get("fqdn") or co.get("website") or co.get("domain")
-           or co.get("companyDomain") or co.get("url") or co.get("companyUrl"))
-    return (clean_domain(raw) or "-") if raw else "-"
+def match_country(raw) -> str:
+    """Country -> Salesforce picklist TEXT. Unmatched -> '' (safe import)."""
+    if pd.isna(raw) or str(raw).strip() == "":
+        return ""
+    clean = normalize_text(raw)
+    if clean in COUNTRY_ALIASES_NORMALIZED:
+        return COUNTRY_ALIASES_NORMALIZED[clean]
+    if clean in COUNTRY_NORMALIZED:
+        return COUNTRY_NORMALIZED[clean]
+    all_keys = list(COUNTRY_NORMALIZED) + list(COUNTRY_ALIASES_NORMALIZED)
+    close = difflib.get_close_matches(clean, all_keys, n=1, cutoff=0.78)
+    if close:
+        hit = close[0]
+        return COUNTRY_NORMALIZED.get(hit) or COUNTRY_ALIASES_NORMALIZED.get(hit, "")
+    return ""
 
 
-def _get_company_name(person: dict) -> str:
-    val = (person.get("companyName") or person.get("company_name")
-           or person.get("organizationName") or person.get("organization_name"))
-    if val:
-        return val
-    co = person.get("company") or {}
-    return (co.get("name") or co.get("companyName") or co.get("displayName") or "-")
+def industry_from_subindustry(sub) -> str:
+    if isinstance(sub, str) and sub.startswith("Food & Beverage"):
+        return "Food & Beverage"
+    return "Non-Food Related Manufacturing"
 
 
-def _get_person_id(person: dict) -> str:
-    return (person.get("personId") or person.get("person_id")
-            or person.get("id") or person.get("contactId")
-            or person.get("contact_id") or person.get("lushaId") or "")
+# ==========================================================================
+# Main class
+# ==========================================================================
 
-
-def _get_name(person: dict) -> str:
-    first = person.get("firstName") or person.get("first_name") or ""
-    last  = person.get("lastName")  or person.get("last_name")  or ""
-    if first or last:
-        return f"{first} {last}".strip()
-    return (person.get("name") or person.get("fullName")
-            or person.get("full_name") or "Unknown")
-
-
-def _get_title(person: dict) -> str:
-    val = person.get("jobTitle")
-    if isinstance(val, dict):
-        return val.get("title") or "-"
-    return (val or person.get("title") or person.get("job_title")
-            or person.get("position") or "-")
-
-
-def _get_linkedin(person: dict) -> str:
-    return (person.get("linkedinUrl") or person.get("linkedin_url")
-            or person.get("linkedin") or person.get("linkedInUrl") or "-")
-
-
-def _extract_results(data: dict) -> list:
-    inner = data.get("data", [])
-    if isinstance(inner, dict):
-        return inner.get("results", [])
-    if isinstance(inner, list):
-        return inner
-    return []
-
-
-# ── Lusha API calls ───────────────────────────────────────────────────────────
-
-def _run_payload(headers: dict, name: str, payload: dict) -> list:
-    """POST to Lusha search; retries on 429; prints status on errors."""
-    for attempt in range(3):
-        resp = requests.post(SEARCH_URL, json=payload, headers=headers, timeout=20)
-        if resp.ok:
-            results = _extract_results(resp.json())
-            if results:
-                print(f"    ✅ {name} → {len(results)} contacts")
-            return results
-        if resp.status_code == 429:
-            _smart_wait(resp.text)
-            continue
-        if resp.status_code in (401, 402, 403):
-            status.warn(status.classify_api_error("Lusha", resp.status_code, resp.text))
-            return []
-        print(f"    ⚠️ {name} failed {resp.status_code}: {resp.text[:200]}")
-        return []
-    return []
-
-
-def _search_by_domain(headers: dict, domain: str, keywords: list,
-                      page: int = 0, size: int = 10) -> tuple[list, str]:
-    """Strategy 1: companies.include.domains filter (most precise)."""
-    payload = {
-        "filters": {
-            "contacts": {"include": {"jobTitles": keywords}},
-            "companies": {"include": {"domains": [domain]}},
-        },
-        "pages": {"page": page, "size": size},
-    }
-    results = _run_payload(headers, "domain_filter", payload)
-    if results:
-        return results, "domain_filter"
-
-    # Strategy 2: domain as searchText (fallback)
-    payload2 = {
-        "filters": {
-            "contacts": {"include": {"jobTitles": keywords, "searchText": domain}}
-        },
-        "pages": {"page": page, "size": size},
-    }
-    results2 = _run_payload(headers, "domain_searchtext", payload2)
-    return (results2, "domain_searchtext") if results2 else ([], "no_result")
-
-
-def _search_by_name(headers: dict, company: str, keywords: list,
-                    page: int = 0, size: int = 10) -> tuple[list, str]:
-    """Strategy 3: company name search (used only when domain yields nothing)."""
-    payload = {
-        "filters": {
-            "contacts": {"include": {"jobTitles": keywords, "companies": [{"names": [company]}]}}
-        },
-        "pages": {"page": page, "size": size},
-    }
-    results = _run_payload(headers, "name_filter", payload)
-    return (results, "name_filter") if results else ([], "no_result")
-
-
-def _enrich(headers: dict, person_id: str) -> tuple[str, str, bool]:
-    """Returns (email, linkedin, credit_charged)."""
-    if not person_id:
-        return "-", "-", False
-    params = {"personId": person_id, "revealPhones": "false", "revealEmails": "true"}
-    for _ in range(3):
-        resp = requests.get(ENRICH_URL, headers=headers, params=params, timeout=20)
-        if resp.ok:
-            data = resp.json()
-            contact = data.get("contact") or {}
-            if contact.get("error"):
-                return "-", "-", False
-            contact_data = contact.get("data") or {}
-            emails = contact_data.get("emailAddresses") or []
-            email = emails[0].get("email", "-") if emails else "-"
-            social = contact_data.get("socialLinks") or {}
-            linkedin = social.get("linkedin") or social.get("linkedinUrl") or "-"
-            return email, linkedin, contact.get("isCreditCharged", False)
-        if resp.status_code == 429:
-            _smart_wait(resp.text)
-            continue
-        if resp.status_code in (401, 402, 403):
-            status.warn(status.classify_api_error("Lusha (enrich)", resp.status_code, resp.text))
-            return "-", "-", False
-        print(f"    ⚠️ Enrich error {resp.status_code}: {resp.text[:200]}")
-        return "-", "-", False
-    return "-", "-", False
-
-
-def domain_variants(domain: str, country: str, tld_map: dict) -> list[str]:
-    """Ordered list of domains to try on Lusha before name search.
-
-    gaiawines.gr + Greece  -> [gaiawines.gr, gaiawines.com]
-    acme.com     + Germany -> [acme.com, acme.de]
-    Searches are free on Lusha; only enrich burns credits.
-    """
-    from .utils import domain_base
-    domain = clean_domain(domain)
-    if not domain:
-        return []
-    base = domain_base(domain)
-    variants = [domain]
-
-    def add(tld: str):
-        cand = f"{base}.{tld}"
-        if cand not in variants:
-            variants.append(cand)
-
-    add("com")
-    country_tld = tld_map.get(str(country or "").strip().lower())
-    if country_tld:
-        add(country_tld)
-    return variants
-
-
-# ── main class ────────────────────────────────────────────────────────────────
-
-def _rank_people_by_fit(llm, people: list[dict]) -> list[dict]:
-    """Order candidates by how relevant their title is to buying GLASS packaging.
-
-    The tier keywords already restrict *which* people come back, but a single
-    tier still mixes very different buyers: a "Packaging Buyer" and an
-    "IT Procurement Manager" both match Tier 1 on the word "procurement", yet
-    only one of them ever purchases glass. Keyword rules cannot tell them
-    apart; the model can.
-
-    The model only REORDERS the list it is given — it never invents, drops or
-    judges anyone as unsuitable. If the model is unavailable or errors, the
-    original Lusha order is returned unchanged, so the pipeline never breaks.
-    """
-    if llm is None or len(people) <= 1:
-        return people
-
-    titles = []
-    for idx, person in enumerate(people):
-        titles.append(f"{idx}: {_get_title(person)}")
-
-    prompt = (
-        "You rank sales contacts for a company that sells EMPTY GLASS bottles "
-        "and jars to food and beverage producers. Given the numbered job "
-        "titles below, order them from MOST to LEAST likely to be the person "
-        "who decides on or influences the purchase of glass packaging / "
-        "bottles / jars / raw packaging materials.\n\n"
-        "Rank higher: packaging buyers, procurement/purchasing for materials, "
-        "sourcing, supply chain, operations, production, and — for small "
-        "producers — owners or founders who run purchasing themselves.\n"
-        "Rank lower: roles that buy unrelated things (IT, media, marketing, "
-        "HR, facilities, real estate, travel) and purely financial or "
-        "administrative roles.\n\n"
-        "Titles:\n" + "\n".join(titles) + "\n\n"
-        'Return ONLY strict JSON: {"order": [list of the indices, best first]}. '
-        "Include every index exactly once."
-    )
-    try:
-        res = llm.json_call(
-            system="You are a precise B2B sales analyst. Return strict JSON only.",
-            user=prompt,
-            max_tokens=300,
-        )
-        order = res.get("order", [])
-        seen, ranked = set(), []
-        for i in order:
-            if isinstance(i, int) and 0 <= i < len(people) and i not in seen:
-                seen.add(i)
-                ranked.append(people[i])
-        # Append anyone the model forgot, preserving original order.
-        for idx, person in enumerate(people):
-            if idx not in seen:
-                ranked.append(person)
-        return ranked if ranked else people
-    except Exception:
-        return people
-
-
-class ContactFinder:
-    def __init__(self, tiers: list[dict], settings: dict, llm=None):
-        self.tiers = tiers
+class CRMExporter:
+    def __init__(self, llm: LLM, mapping: dict | None = None,
+                 llm_cheap: LLM | None = None):
+        # llm       -> company_profile (ungrounded estimation, needs judgement)
+        # llm_cheap -> the four picklist classifiers (closed answer set)
         self.llm = llm
-        self.headers = {
-            "accept": "application/json",
-            "content-type": "application/json",
-            "api_key": os.environ["LUSHA_API_KEY"],
-        }
-        rl = settings["rate_limits"]
-        self.sleep_company  = rl["sleep_between_companies"]
-        self.max_contacts   = settings["pipeline"]["max_contacts_per_company"]
-        self.country_tlds   = {str(k).lower(): str(v)
-                               for k, v in (settings.get("country_tlds") or {}).items()}
+        self.llm_cheap = llm_cheap or llm
+        # How many companies to process at once. Each unit of work is a network
+        # call that spends most of its time waiting, so threads (not processes)
+        # give a large speed-up. Ordered output is preserved regardless.
+        self.max_workers = 8
+        m = mapping or {}
+        self.record_type_id     = m.get("record_type_id", "012WP0000001n6jYAA")
+        self.business_category  = m.get("business_category", "Distributor")
+        self.market_positioning = m.get("market_positioning", "Strong Player")
 
-    def find_bulk(self, company: str, website: str = "", country: str = "",
-                  target: int = 10, max_pages: int = 5) -> list[dict]:
-        """Keep searching until `target` contacts with an email are collected.
+    # ---- company profile (single GPT call for 4 financial/sizing fields) ----
 
-        Same matching rules as find(): domain variants first, name search as a
-        fallback, the same company-match guard. The difference is that find()
-        stops at the first tier that produces anything, because it only wants a
-        couple of decision-makers. Here we walk every tier and page on through
-        the result set until the quota is met.
+    def company_profile(self, company: str, country: str, ai_note: str) -> dict:
+        """Single JSON call: Revenue, Employees, Market Positioning, Annual Volume.
 
-        Cost warning: Lusha searches are free but each email reveal burns a
-        credit, so a target of N costs up to N credits per company.
+        All four fields in one call to minimise tokens and keep estimates
+        internally consistent (a company can't be a Market Leader with 50
+        employees and $1M revenue).
         """
-        domain = clean_domain(website) or ""
-        variants = domain_variants(domain, country, self.country_tlds)
-        found: list[dict] = []
-        seen_ids: set[str] = set()
-        top_company_name: str | None = None
-        print(f"  📥 Bulk search — target {target} contacts")
+        cache_key = f"{company}|{country}"
+        cache = self.llm._cache("company_profile")
+        cached = cache.get(cache_key)
+        if cached is not None:
+            import json
+            try:
+                return json.loads(cached)
+            except Exception:
+                pass
 
-        for tier in self.tiers:
-            if len(found) >= target:
-                break
-            keywords = tier["keywords"]
-            print(f"  🔎 {tier['name']}  ({len(found)}/{target})")
+        prompt = f"""You are a B2B market intelligence analyst. Estimate the following
+for the company below. Use your training knowledge; if uncertain, give your
+best estimate — do not return null.
 
-            for page in range(max_pages):
-                if len(found) >= target:
-                    break
+Company: {company}
+Country: {country}
+Business description: {ai_note or "unknown"}
 
-                people, method = [], "no_result"
-                for var in variants:
-                    people, method = _search_by_domain(
-                        self.headers, var, keywords, page=page, size=20)
-                    if people:
-                        if var != domain:
-                            method = f"domain_variant:{var}"
-                        break
+Return ONLY valid JSON with exactly these keys:
 
-                if not people and page == 0:
-                    people, method = _search_by_name(
-                        self.headers, company, keywords, page=page, size=20)
+"AnnualRevenue": integer (USD). Annual revenue estimate. Round to nearest:
+  1000000 / 5000000 / 10000000 / 25000000 / 50000000 / 100000000 /
+  250000000 / 500000000 / 1000000000. No decimals, no currency symbol.
 
-                if not people:
-                    break            # no more results in this tier
+"NumberOfEmployees": integer. Round to nearest:
+  50 / 100 / 250 / 500 / 1000 / 2500 / 5000 / 10000 / 25000 / 50000 / 100000.
 
-                if top_company_name is None:
-                    top_company_name = _get_company_name(people[0])
-                    print(f"    🎯 Anchored to: {top_company_name}")
+"Market_Positioning__c": exactly one of:
+  Market Maker, Market Leader, Strong Player, Established Player, Emerging Contender.
+  Market Maker / Market Leader = category-defining global giants.
+  Strong Player = significant regional or global operator.
+  Established Player = stable, known in their niche.
+  Emerging Contender = smaller / newer / fast-growing.
 
-                people = _rank_people_by_fit(self.llm, people)
+"""
+        import json
+        result = self.llm.json_call(
+            system=("You are a precise B2B market intelligence analyst. "
+                    "Return strict JSON only — no markdown, no explanation."),
+            user=prompt,
+            max_tokens=120,
+        )
 
-                for person in people:
-                    if len(found) >= target:
-                        break
-                    pid = _get_person_id(person)
-                    if not pid or pid in seen_ids:
-                        continue
-                    seen_ids.add(pid)
+        # Validate & normalise
+        def nearest(val, options):
+            try:
+                v = int(str(val).replace(",", "").replace(".", ""))
+                return min(options, key=lambda x: abs(x - v))
+            except Exception:
+                return options[0]
 
-                    lusha_company = _get_company_name(person)
-                    if (method == "name_filter"
-                            and top_company_name and top_company_name != "-"
-                            and lusha_company != "-"
-                            and not _company_match(top_company_name, lusha_company)):
-                        print(f"    ⛔ Rejected (company mismatch): {lusha_company}")
-                        continue
+        rev_opts  = [1_000_000, 5_000_000, 10_000_000, 25_000_000, 50_000_000,
+                     100_000_000, 250_000_000, 500_000_000, 1_000_000_000]
+        emp_opts  = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000]
+        pos_vals  = MARKET_POSITIONING_VALUES
 
-                    name  = _get_name(person)
-                    title = _get_title(person)
-                    linkedin_search = _get_linkedin(person)
+        profile = {
+            "AnnualRevenue":             nearest(result.get("AnnualRevenue", 10_000_000), rev_opts),
+            "NumberOfEmployees":         nearest(result.get("NumberOfEmployees", 500), emp_opts),
+            "Market_Positioning__c":     result.get("Market_Positioning__c", "Established Player")
+                                         if result.get("Market_Positioning__c") in pos_vals
+                                         else "Established Player",
+        }
+        cache.set(cache_key, json.dumps(profile))
+        return profile
 
-                    time.sleep(SLEEP_BEFORE_ENRICH)
-                    email, linkedin_enrich, charged = _enrich(self.headers, pid)
-                    linkedin = linkedin_enrich if linkedin_enrich != "-" else linkedin_search
+    # ---- GPT classifiers (disk-cached, Turkish production prompts) --------
 
-                    if email and email != "-":
-                        print(f"    🎯 {len(found)+1}/{target}  {email}")
-                        found.append({
-                            "name": name, "title": title, "email": email,
-                            "linkedin": linkedin, "tier": tier["name"],
-                            "match_method": method,
-                            "lusha_company": lusha_company,
-                            "lusha_domain": _get_domain(person),
-                            "credit_charged": charged,
-                        })
+    def business_function(self, title) -> str:
+        default = "GCA Strategy and Corporate Management"
+        if pd.isna(title) or str(title).strip() in ("", "-"):
+            return default
+        system = (
+            "Sen B2B veri sınıflandırma uzmanısın. "
+            "Verilen unvanı aşağıdaki KESİN Function kategorilerinden EN UYGUN olanına ata:\n\n"
+            + ", ".join(FUNCTION_VALUES) + "\n\n"
+            "REHBER:\n"
+            "- CEO, Founder, President, Managing Director gibi unvanlar -> GCA Strategy and Corporate Management\n"
+            "- Procurement, Purchasing, Buyer, Sourcing -> GCA Procurement (Purchasing)\n"
+            "- Glass Category Manager, Category Manager Glass, Global Procurement Glass -> Global Procurement Category Manager Glass\n"
+            "- Sales, Account Manager, Business Development Sales -> GCA Sales\n"
+            "- Marketing, Brand, Communications -> GCA Marketing\n"
+            "- Planning, Supply Planning, Demand Planning -> GCA Planning\n"
+            "- Production, Manufacturing, Plant, Distiller, Brewer, Winemaker, Operations -> GCA Production (Manufacturing)\n"
+            "- Maintenance, Engineering Maintenance -> GCA Maintenance\n"
+            "- Warehouse, Logistics, Supply Chain, Distribution -> GCA Warehouse & Logistics\n"
+            "- Finance, Accounting, Controller -> GCA Finance\n"
+            "- IT, Information Technologies, Digital, Data -> GCA Information Technologies (IT)\n"
+            "- HR, Human Resources, People -> GCA Human Resources (HR)\n"
+            "- Business Development, Partnerships, Growth -> GCA Business Development\n\n"
+            "KURALLAR: Sadece kategori adını birebir aynı yaz. Açıklama yapma."
+        )
+        return self.llm_cheap.choose("function", system, f"Unvan: {str(title).strip()}",
+                               FUNCTION_VALUES, default)
 
-            if len(found) < target:
-                time.sleep(SLEEP_BETWEEN_TIERS)
+    def industry(self, ai_note) -> str:
+        default = "Non-Food Related Manufacturing"
+        if pd.isna(ai_note) or str(ai_note).strip() == "":
+            return default
+        system = (
+            "Üretim açıklamasına bakarak şirketi sadece şu iki Industry değerinden birine ata:\n\n"
+            "Food & Beverage\nNon-Food Related Manufacturing\n\n"
+            "KURALLAR: Sadece kategori ismini birebir yaz. Açıklama yapma."
+        )
+        return self.llm_cheap.choose("industry", system,
+                               f"Açıklama: {str(ai_note).strip()}",
+                               INDUSTRY_VALUES, default)
 
-        print(f"  ✅ Bulk result: {len(found)}/{target}")
-        time.sleep(self.sleep_company)
-        return found
+    def sub_industry(self, ai_note) -> str:
+        default = "Non-Food Related Manufacturing - Other Manufacturing"
+        if pd.isna(ai_note) or str(ai_note).strip() == "":
+            return default
+        system = (
+            "Aşağıdaki üretim açıklamasına bakarak şirketin şu Sub-Industry "
+            "değerlerinden HANGİSİNE ait olduğunu belirle:\n\n"
+            + "\n".join(SUB_INDUSTRY_VALUES) + "\n\n"
+            "REHBER:\n"
+            "- Beer, brewery, brewing, ale, lager -> Food & Beverage - Manufacture of beer\n"
+            "- Dairy, milk, cheese, yogurt, ice cream -> Food & Beverage - Manufacture of dairy products\n"
+            "- Water, juice, soda, soft drink, energy drink, kombucha, tea, coffee drink -> Food & Beverage - Manufacture of non-alcoholic beverages\n"
+            "- Sauce, snack, bakery, confectionery, chocolate, canned food, ready meal, general food -> Food & Beverage - Manufacture of other food products\n"
+            "- Distillery, spirits, whiskey, whisky, vodka, gin, rum, tequila, liquor, liqueur -> Food & Beverage - Manufacture of spirits\n"
+            "- Oil, olive oil, vegetable oil, animal fat -> Food & Beverage - Manufacture of vegetable and animal oils and fats\n"
+            "- Wine, winery, vineyard, champagne, sparkling wine -> Food & Beverage - Manufacture of wine\n"
+            "- Fruit, vegetable, jam, pickle, tomato paste, preserved vegetables -> Food & Beverage - Processing and preserving of fruit and vegetables\n"
+            "- Meat, seafood, fish, poultry, preserved meat -> Food & Beverage - Processing and preserving of meat / seafood\n"
+            "- Soap, candle, detergent, chemical products -> Non-Food Related Manufacturing - Manufacture of chemicals and chemical products (soap, candle, etc.)\n"
+            "- Glass, glass packaging, bottle manufacturer, jar manufacturer -> Non-Food Related Manufacturing - Manufacture of glass and glass products\n"
+            "- Perfume, cosmetics, beauty, skincare, personal care -> Non-Food Related Manufacturing - Perfumery & Cosmetics\n"
+            "- Diğer tüm non-food manufacturing -> Non-Food Related Manufacturing - Other Manufacturing\n\n"
+            "KURALLAR: Asla açıklama yapma. Sadece seçtiğin kategoriyi birebir yaz."
+        )
+        return self.llm_cheap.choose("sub_industry", system,
+                               f"Açıklama: {str(ai_note).strip()}",
+                               SUB_INDUSTRY_VALUES, default)
 
-    def find(self, company: str, website: str = "",
-             country: str = "") -> list[dict]:
-        """Returns list of contact dicts; empty list if nothing found."""
-        domain = clean_domain(website) or ""
-        variants = domain_variants(domain, country, self.country_tlds)
-        found: list[dict] = []
-        seen_ids: set[str] = set()
-        top_company_name: str | None = None
+    def seniority(self, title) -> str:
+        default = "Mid Level"
+        if pd.isna(title) or str(title).strip() in ("", "-"):
+            return default
+        system = (
+            "Sen bir İK uzmanısın. Verilen unvanın şu seviyelerden HANGİSİNE ait olduğunu belirle:\n\n"
+            + ", ".join(LEVEL_VALUES) + "\n\n"
+            "REHBER:\n"
+            "- Board of Directors, Chairman -> Board Level\n"
+            "- CEO, CFO, COO, CTO, President, Founder, Owner -> C-Suite Level\n"
+            "- VP, Vice President, General Manager, Director, Head of -> Upper Managerial Level\n"
+            "- Manager, Supervisor, Lead -> Manager Level\n"
+            "- Specialist, Analyst, Coordinator, Senior, Engineer, Distiller, Brewer -> Mid Level\n"
+            "- Assistant, Junior, Intern, Trainee -> Entry Level\n\n"
+            "KURALLAR: Açıklama yapma. Sadece seçtiğin seviyeyi yaz."
+        )
+        return self.llm_cheap.choose("seniority", system, f"Unvan: {str(title).strip()}",
+                               LEVEL_VALUES, default)
 
-        for tier in self.tiers:
-            keywords = tier["keywords"]
-            tier_name = tier["name"]
-            print(f"  🔎 {tier_name}")
+    # ---- main --------------------------------------------------------------
 
-            # ── pick search strategy: domain variants first ───────────────
-            people, method = [], "no_result"
-            for var in variants:
-                people, method = _search_by_domain(self.headers, var, keywords)
-                if people:
-                    if var != domain:
-                        method = f"domain_variant:{var}"
-                        print(f"    🔀 TLD variant hit: {var}")
-                    break
+    def _pmap(self, fn, items):
+        """Apply fn to every item concurrently, returning results IN ORDER.
 
-            if not people:
-                print(f"    ↩️ Domain search empty — trying name search for '{company}'")
-                people, method = _search_by_name(self.headers, company, keywords)
+        ThreadPoolExecutor.map preserves input order in its output, so the
+        rows never get shuffled — company N's result always lands in row N.
+        A single failing item raises, exactly as the old sequential loop did.
+        """
+        items = list(items)
+        if not items:
+            return []
+        workers = max(1, min(self.max_workers, len(items)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            return list(ex.map(fn, items))
 
-            if not people:
-                print("    ❌ No contacts found.")
-                time.sleep(SLEEP_BETWEEN_TIERS)
-                continue
+    def export(self, df: pd.DataFrame, event_name: str) -> pd.DataFrame:
+        # Accept Turkish column names from legacy files
+        df = df.rename(columns={k: v for k, v in TURKISH_COLUMN_MAP.items()
+                                if k in df.columns})
 
-            # ── lock onto the first company returned ──────────────────────
-            if top_company_name is None:
-                top_company_name = _get_company_name(people[0])
-                print(f"    🎯 Anchored to: {top_company_name}")
+        # A row without an email address is not importable: it would create a
+        # Lead nobody can contact, and the "Bilinmiyor" placeholders would end
+        # up in Salesforce as if they were real names. Drop them here so the
+        # CRM file only ever contains actionable records.
+        if "Email" in df.columns:
+            has_email = df["Email"].astype(str).str.strip().str.contains(
+                "@", regex=False, na=False)
+            dropped = int((~has_email).sum())
+            df = df[has_email].reset_index(drop=True)
+            if dropped:
+                print(f"   ⏭️ {dropped} row(s) without an email skipped")
+        if df.empty:
+            return pd.DataFrame(columns=FINAL_COLUMN_ORDER)
 
-            # Reorder this tier's candidates so the best-fit title is tried
-            # first — the glass buyer ahead of the IT buyer. Falls back to the
-            # original Lusha order when no model is available.
-            people = _rank_people_by_fit(self.llm, people)
+        out = pd.DataFrame()
+        out["Company"] = df.get("Company", "")
+        out["Website"] = df.get("Website", "")
+        out["Email"]   = df.get("Email", "")
+        out["Title"]   = df.get("Title", "")
 
-            added = 0
-            for person in people:
-                if added >= self.max_contacts:
-                    break
+        names = df.get("Name", pd.Series([""] * len(df))).apply(
+            lambda x: pd.Series(split_name(x)))
+        out["FirstName"], out["LastName"] = names[0], names[1]
 
-                pid = _get_person_id(person)
-                if not pid or pid in seen_ids:
-                    continue
-                seen_ids.add(pid)
+        out["Country"] = df.get("Country", pd.Series([""] * len(df))).apply(match_country)
 
-                lusha_company = _get_company_name(person)
+        ai_note = df.get("AI_Note", pd.Series([""] * len(df)))
+        title   = df.get("Title",   pd.Series([""] * len(df)))
 
-                # ── company match guard (name-search only really needs this) ─
-                if (method == "name_filter"
-                        and top_company_name and top_company_name != "-"
-                        and lusha_company != "-"):
-                    if not _company_match(top_company_name, lusha_company):
-                        print(f"    ⛔ Rejected (company mismatch): "
-                              f"{top_company_name} ≠ {lusha_company}")
-                        continue
+        print("   ➤ 1/4 Function eşleştiriliyor...")
+        out["Function_Picklist__c"] = self._pmap(self.business_function, title)
+        print("   ➤ 2/4 Industry eşleştiriliyor...")
+        out["Industry"] = self._pmap(self.industry, ai_note)
+        print("   ➤ 3/4 Sub-Industry eşleştiriliyor...")
+        out["Sub_Industry_Form__c"] = self._pmap(self.sub_industry, ai_note)
+        # Guarantee Industry consistency with Sub-Industry prefix
+        out["Industry"] = out["Sub_Industry_Form__c"].apply(industry_from_subindustry)
+        print("   ➤ 4/4 Kıdem seviyeleri eşleştiriliyor...")
+        out["Level__c"] = self._pmap(self.seniority, title)
 
-                name   = _get_name(person)
-                title  = _get_title(person)
-                linkedin_search = _get_linkedin(person)
-                print(f"    👤 {name} | {title} | {lusha_company} | id:{pid}")
+        out["Business_Category__c"] = self.business_category
+        out["Event_Name__c"]        = event_name
+        out["RecordTypeID"]         = self.record_type_id
 
-                time.sleep(SLEEP_BEFORE_ENRICH)
-                email, linkedin_enrich, charged = _enrich(self.headers, pid)
-                linkedin = linkedin_enrich if linkedin_enrich != "-" else linkedin_search
+        # ── LinkedIn + Phone from pipeline columns ──
+        out["LinkedIn_URL__c"] = df.get("LinkedIn", pd.Series([""] * len(df))).fillna("")
+        out["Phone"]           = df.get("Phones", df.get("Phone",
+                                    pd.Series([""] * len(df)))).fillna("")
 
-                if email and email != "-":
-                    print(f"    🎯 Email found: {email}")
-                    found.append({
-                        "name":         name,
-                        "title":        title,
-                        "email":        email,
-                        "linkedin":     linkedin,
-                        "tier":         tier_name,
-                        "match_method": method,
-                        "lusha_company":lusha_company,
-                        "lusha_domain": _get_domain(person),
-                        "credit_charged": charged,
-                    })
-                    added += 1
-                else:
-                    print(f"    ⚠️ No email: {name} | {title}")
+        # ── Company profile: 4 fields, 1 GPT call per company ──
+        print("   ➤ Company profiles (revenue, employees, positioning, volume)...")
+        companies = df.get("Company", pd.Series([""] * len(df)))
+        countries = df.get("Country", pd.Series([""] * len(df)))
+        triples = list(zip(companies.astype(str), countries.astype(str),
+                           ai_note.astype(str)))
+        profiles = self._pmap(
+            lambda t: self.company_profile(t[0], t[1], t[2]), triples)
+        for col in ("AnnualRevenue", "NumberOfEmployees", "Market_Positioning__c"):
+            out[col] = [p.get(col, "") for p in profiles]
 
-            if found:
-                break  # tier that produced results — don't burn credits on lower tiers
-
-            print("    ⚠️ No emails in this tier — trying next tier")
-            time.sleep(SLEEP_BETWEEN_TIERS)
-
-        time.sleep(self.sleep_company)
-        return found
+        return out[FINAL_COLUMN_ORDER]
