@@ -721,21 +721,38 @@ Return ONLY valid JSON with exactly these keys:
 
     # ---- main --------------------------------------------------------------
 
-    def _pmap(self, fn, items):
+    def _pmap(self, fn, items, progress_cb=None, base=0, total=None):
         """Apply fn to every item concurrently, returning results IN ORDER.
 
         ThreadPoolExecutor.map preserves input order in its output, so the
         rows never get shuffled — company N's result always lands in row N.
         A single failing item raises, exactly as the old sequential loop did.
+
+        progress_cb(done, total) is called as each unit finishes. Because the
+        work runs in parallel, "done" counts COMPLETED units (not a row index),
+        which is exactly what a progress bar needs. `base`/`total` let several
+        _pmap phases feed one shared bar.
         """
         items = list(items)
         if not items:
             return []
         workers = max(1, min(self.max_workers, len(items)))
+        total = total or len(items)
+        results = [None] * len(items)
+        done = base
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            return list(ex.map(fn, items))
+            futures = {ex.submit(fn, it): idx for idx, it in enumerate(items)}
+            from concurrent.futures import as_completed
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                results[idx] = fut.result()      # raises on error, like before
+                done += 1
+                if progress_cb:
+                    progress_cb(done, total)
+        return results
 
-    def export(self, df: pd.DataFrame, event_name: str) -> pd.DataFrame:
+    def export(self, df: pd.DataFrame, event_name: str,
+               progress_cb=None) -> pd.DataFrame:
         # Accept Turkish column names from legacy files
         df = df.rename(columns={k: v for k, v in TURKISH_COLUMN_MAP.items()
                                 if k in df.columns})
@@ -769,16 +786,29 @@ Return ONLY valid JSON with exactly these keys:
         ai_note = df.get("AI_Note", pd.Series([""] * len(df)))
         title   = df.get("Title",   pd.Series([""] * len(df)))
 
+        # One shared progress bar across all five parallel phases. Total work
+        # is 4 picklist passes + 1 profile pass, each of length n.
+        n = len(df)
+        phases = 5
+        grand_total = phases * n
+        def _prog(done, _):
+            if progress_cb:
+                progress_cb(done, grand_total)
+
         print("   ➤ 1/4 Function eşleştiriliyor...")
-        out["Function_Picklist__c"] = self._pmap(self.business_function, title)
+        out["Function_Picklist__c"] = self._pmap(
+            self.business_function, title, _prog, base=0 * n, total=grand_total)
         print("   ➤ 2/4 Industry eşleştiriliyor...")
-        out["Industry"] = self._pmap(self.industry, ai_note)
+        out["Industry"] = self._pmap(
+            self.industry, ai_note, _prog, base=1 * n, total=grand_total)
         print("   ➤ 3/4 Sub-Industry eşleştiriliyor...")
-        out["Sub_Industry_Form__c"] = self._pmap(self.sub_industry, ai_note)
+        out["Sub_Industry_Form__c"] = self._pmap(
+            self.sub_industry, ai_note, _prog, base=2 * n, total=grand_total)
         # Guarantee Industry consistency with Sub-Industry prefix
         out["Industry"] = out["Sub_Industry_Form__c"].apply(industry_from_subindustry)
         print("   ➤ 4/4 Kıdem seviyeleri eşleştiriliyor...")
-        out["Level__c"] = self._pmap(self.seniority, title)
+        out["Level__c"] = self._pmap(
+            self.seniority, title, _prog, base=3 * n, total=grand_total)
 
         out["Business_Category__c"] = self.business_category
         out["Event_Name__c"]        = event_name
@@ -796,7 +826,8 @@ Return ONLY valid JSON with exactly these keys:
         triples = list(zip(companies.astype(str), countries.astype(str),
                            ai_note.astype(str)))
         profiles = self._pmap(
-            lambda t: self.company_profile(t[0], t[1], t[2]), triples)
+            lambda t: self.company_profile(t[0], t[1], t[2]), triples,
+            _prog, base=4 * n, total=grand_total)
         for col in ("AnnualRevenue", "NumberOfEmployees", "Market_Positioning__c"):
             out[col] = [p.get(col, "") for p in profiles]
 
