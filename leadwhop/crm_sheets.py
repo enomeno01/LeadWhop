@@ -150,11 +150,19 @@ Return ONLY valid JSON:
         def _profile(w):
             return self.profile(w["company"], w["country"], w["note"], w["site"])
         workers = max(1, min(8, len(work)))
+        profiles = [None] * len(work)
         if work:
+            from concurrent.futures import as_completed
+            done = 0
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                profiles = list(ex.map(_profile, work))
-        else:
-            profiles = []
+                futures = {ex.submit(_profile, w): idx
+                           for idx, w in enumerate(work)}
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    profiles[idx] = fut.result()
+                    done += 1
+                    if progress_cb:
+                        progress_cb(done, len(work))
 
         for n, (w, prof) in enumerate(zip(work, profiles), start=1):
             email   = w["email"]
@@ -187,8 +195,6 @@ Return ONLY valid JSON:
                     "Type__c": loc["type"],
                 })
 
-            if progress_cb:
-                progress_cb(n, len(work))
 
         return (pd.DataFrame(sub_rows, columns=SUB_CATEGORY_COLUMNS),
                 pd.DataFrame(loc_rows, columns=LOCATION_COLUMNS))
