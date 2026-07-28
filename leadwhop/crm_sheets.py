@@ -13,6 +13,7 @@ Salesforce Ids by a local lookup, which costs nothing.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import time
 
 import pandas as pd
@@ -129,18 +130,35 @@ Return ONLY valid JSON:
               ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Returns (sub_category_maps, locations) for rows that have an email."""
         sub_rows, loc_rows = [], []
-        rows = list(df.iterrows())
-        for n, (_, row) in enumerate(rows, start=1):
+        # Only rows with an email produce output; collect them first so the GPT
+        # profile calls can run concurrently.
+        work = []
+        for _, row in df.iterrows():
             email = str(row.get("Email") or "").strip()
             if "@" not in email:
                 continue
+            work.append({
+                "email":   email,
+                "company": str(row.get("Company") or "").strip(),
+                "country": str(row.get("Country") or "").strip(),
+                "note":    str(row.get("AI_Note") or "").strip(),
+                "site":    str(row.get("Website") or "").strip(),
+            })
 
-            company = str(row.get("Company") or "").strip()
-            country = str(row.get("Country") or "").strip()
-            note    = str(row.get("AI_Note") or "").strip()
-            site    = str(row.get("Website") or "").strip()
+        # Profiles in parallel; ThreadPoolExecutor.map keeps them in row order,
+        # so LocationNum numbering and the sub/loc sheets stay aligned.
+        def _profile(w):
+            return self.profile(w["company"], w["country"], w["note"], w["site"])
+        workers = max(1, min(8, len(work)))
+        if work:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                profiles = list(ex.map(_profile, work))
+        else:
+            profiles = []
 
-            prof = self.profile(company, country, note, site)
+        for n, (w, prof) in enumerate(zip(work, profiles), start=1):
+            email   = w["email"]
+            country = w["country"]
             sub_id, cat_id, _ = catalog.resolve_sub_category(prof["sub_category"])
 
             sub_rows.append({
@@ -170,7 +188,7 @@ Return ONLY valid JSON:
                 })
 
             if progress_cb:
-                progress_cb(n, len(rows))
+                progress_cb(n, len(work))
 
         return (pd.DataFrame(sub_rows, columns=SUB_CATEGORY_COLUMNS),
                 pd.DataFrame(loc_rows, columns=LOCATION_COLUMNS))
