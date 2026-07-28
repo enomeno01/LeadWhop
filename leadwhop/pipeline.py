@@ -231,7 +231,9 @@ class Pipeline:
                 # CRM export is a SEPARATE artifact — the enriched df stays
                 # intact so stage 6 (mail) and the main Excel keep Name,
                 # AI_Note and all pipeline columns.
-                self.crm_df = self.exporter.export(df, event_name or "Untitled Event")
+                self.crm_df = self.exporter.export(
+                    df, event_name or "Untitled Event",
+                    progress_cb=lambda i, n: report(i - 1, n, "export"))
                 self.crm_df.to_excel(self.output_dir / "crm_import.xlsx",
                                      index=False, engine="openpyxl")
                 # Companion sheets: one GPT call per lead covers both.
