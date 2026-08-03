@@ -609,10 +609,15 @@ Return ONLY valid JSON with exactly these keys:
 
 "Market_Positioning__c": exactly one of:
   Market Maker, Market Leader, Strong Player, Established Player, Emerging Contender.
-  Market Maker / Market Leader = category-defining global giants.
-  Strong Player = significant regional or global operator.
-  Established Player = stable, known in their niche.
-  Emerging Contender = smaller / newer / fast-growing.
+  Judge the company's standing RELATIVE TO ITS HOME MARKET ({country}), not only
+  the world stage — a firm can lead its national market without being a global giant.
+  Market Maker = defines/dominates its category globally (a handful of world giants).
+  Market Leader = the clear №1-3 in its national market, or a major multinational.
+  Strong Player = a significant, well-known operator in its country or region.
+  Established Player = a stable, recognised company in its niche or locality.
+  Emerging Contender = smaller, newer or fast-growing; limited market presence.
+  Spread your judgements across these five levels — most real companies are NOT
+  all the same; use revenue, employees and the description to differentiate.
 
 """
         import json
@@ -636,12 +641,24 @@ Return ONLY valid JSON with exactly these keys:
         emp_opts  = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000]
         pos_vals  = MARKET_POSITIONING_VALUES
 
+        rev_val = nearest(result.get("AnnualRevenue", 10_000_000), rev_opts)
+        emp_val = nearest(result.get("NumberOfEmployees", 500), emp_opts)
+
+        # If the model returned a valid positioning, trust it. Otherwise derive
+        # a sensible fallback from the revenue band instead of stamping every
+        # company "Established Player" — that band-based guess at least varies
+        # with company size rather than being identical for everyone.
+        pos = result.get("Market_Positioning__c")
+        if pos not in pos_vals:
+            if   rev_val >= 500_000_000: pos = "Market Leader"
+            elif rev_val >= 100_000_000: pos = "Strong Player"
+            elif rev_val >=  25_000_000: pos = "Established Player"
+            else:                        pos = "Emerging Contender"
+
         profile = {
-            "AnnualRevenue":             nearest(result.get("AnnualRevenue", 10_000_000), rev_opts),
-            "NumberOfEmployees":         nearest(result.get("NumberOfEmployees", 500), emp_opts),
-            "Market_Positioning__c":     result.get("Market_Positioning__c", "Established Player")
-                                         if result.get("Market_Positioning__c") in pos_vals
-                                         else "Established Player",
+            "AnnualRevenue":         rev_val,
+            "NumberOfEmployees":     emp_val,
+            "Market_Positioning__c": pos,
         }
         cache.set(cache_key, json.dumps(profile))
         return profile
