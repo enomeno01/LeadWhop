@@ -467,7 +467,7 @@ FINAL_COLUMN_ORDER = [
     "FirstName", "LastName", "Company", "Website", "Email", "Title",
     "Phone", "LinkedIn_URL__c", "Country", "Industry",
     "Business_Category__c", "Function_Picklist__c", "Sub_Industry_Form__c",
-    "Level__c", "Market_Positioning__c", "AnnualRevenue",
+    "Level__c", "Market_Positioning__c", "AnnualRevenue", "CurrencyIsoCode",
     "NumberOfEmployees", "Event_Name__c", "RecordTypeID",
 ]
 
@@ -527,6 +527,22 @@ def match_country(raw) -> str:
         hit = close[0]
         return COUNTRY_NORMALIZED.get(hit) or COUNTRY_ALIASES_NORMALIZED.get(hit, "")
     return ""
+
+
+def _find_col(df, *keywords):
+    """Return the first column whose name contains any keyword (case-insensitive).
+
+    Input files vary: a LinkedIn column might be "LinkedIn", "LinkedIn_URL",
+    "linkedin url", "Profile"… Matching on a substring means the user doesn't
+    have to rename anything for the value to be picked up.
+    """
+    import pandas as _pd
+    for kw in keywords:
+        low = kw.lower()
+        for col in df.columns:
+            if low in str(col).lower():
+                return df[col]
+    return _pd.Series([""] * len(df))
 
 
 def industry_from_subindustry(sub) -> str:
@@ -781,7 +797,8 @@ Return ONLY valid JSON with exactly these keys:
             lambda x: pd.Series(split_name(x)))
         out["FirstName"], out["LastName"] = names[0], names[1]
 
-        out["Country"] = df.get("Country", pd.Series([""] * len(df))).apply(match_country)
+        country_src = _find_col(df, "Country", "Ülke", "Ulke", "Nation")
+        out["Country"] = country_src.apply(match_country)
 
         ai_note = df.get("AI_Note", pd.Series([""] * len(df)))
         title   = df.get("Title",   pd.Series([""] * len(df)))
@@ -813,16 +830,22 @@ Return ONLY valid JSON with exactly these keys:
         out["Business_Category__c"] = self.business_category
         out["Event_Name__c"]        = event_name
         out["RecordTypeID"]         = self.record_type_id
+        # Salesforce expects one currency code per record; the whole pipeline
+        # reports figures in euros, so this is a fixed "EUR" for every row.
+        out["CurrencyIsoCode"]      = "EUR"
 
         # ── LinkedIn + Phone from pipeline columns ──
-        out["LinkedIn_URL__c"] = df.get("LinkedIn", pd.Series([""] * len(df))).fillna("")
+        # Any column mentioning LinkedIn counts: "LinkedIn", "LinkedIn_URL",
+        # "linkedin url", "Profile URL"…
+        out["LinkedIn_URL__c"] = _find_col(
+            df, "linkedin", "profile url").fillna("")
         out["Phone"]           = df.get("Phones", df.get("Phone",
                                     pd.Series([""] * len(df)))).fillna("")
 
         # ── Company profile: 4 fields, 1 GPT call per company ──
         print("   ➤ Company profiles (revenue, employees, positioning, volume)...")
         companies = df.get("Company", pd.Series([""] * len(df)))
-        countries = df.get("Country", pd.Series([""] * len(df)))
+        countries = country_src
         triples = list(zip(companies.astype(str), countries.astype(str),
                            ai_note.astype(str)))
         profiles = self._pmap(
