@@ -144,9 +144,16 @@ def _extract_results(data: dict) -> list:
 # ── Lusha API calls ───────────────────────────────────────────────────────────
 
 def _run_payload(headers: dict, name: str, payload: dict) -> list:
-    """POST to Lusha search; retries on 429; prints status on errors."""
+    """POST to Lusha search; retries on 429 AND on network errors."""
     for attempt in range(3):
-        resp = requests.post(SEARCH_URL, json=payload, headers=headers, timeout=20)
+        try:
+            resp = requests.post(SEARCH_URL, json=payload, headers=headers, timeout=20)
+        except requests.RequestException as e:
+            # Timeout / dropped connection / DNS blip: don't crash the whole
+            # run — wait briefly and retry, then give up on THIS search only.
+            print(f"    🌐 network error ({name}), retry {attempt+1}/3: {e}")
+            time.sleep(5)
+            continue
         if resp.ok:
             results = _extract_results(resp.json())
             if results:
@@ -207,7 +214,12 @@ def _enrich(headers: dict, person_id: str) -> tuple[str, str, bool]:
         return "-", "-", False
     params = {"personId": person_id, "revealPhones": "false", "revealEmails": "true"}
     for _ in range(3):
-        resp = requests.get(ENRICH_URL, headers=headers, params=params, timeout=20)
+        try:
+            resp = requests.get(ENRICH_URL, headers=headers, params=params, timeout=20)
+        except requests.RequestException as e:
+            print(f"    🌐 network error (enrich), retrying: {e}")
+            time.sleep(5)
+            continue
         if resp.ok:
             data = resp.json()
             contact = data.get("contact") or {}
