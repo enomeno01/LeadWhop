@@ -126,8 +126,17 @@ class Pipeline:
                 # Company so downstream keys exist, without clobbering Name.
                 df["Company"] = ""
 
-        def report(i, n, stage):
-            if progress_cb:
+        def report(i, n, stage, detail=None):
+            """Progress ping. `detail` is a short human line for the live feed.
+
+            progress_cb may accept 3 or 4 arguments; the 4th is optional so an
+            older UI keeps working unchanged.
+            """
+            if not progress_cb:
+                return
+            try:
+                progress_cb(stage, i + 1, n, detail)
+            except TypeError:
                 progress_cb(stage, i + 1, n)
 
         if "websites" in stages:
@@ -145,7 +154,8 @@ class Pipeline:
                 df.at[i, "Website_Confidence"] = res.get("confidence", "")
                 df.at[i, "Website_Debug"] = res.get("debug", "")
                 df.at[i, "Needs_Review"] = bool(res.get("needs_review", False))
-                report(i, len(df), "websites")
+                report(i, len(df), "websites",
+                       f"{row['Company']} → {res.get('website','') or '(bulunamadı)'}")
                 if i % self.checkpoint_every == 0:
                     self._checkpoint(df, "websites")
 
@@ -168,7 +178,8 @@ class Pipeline:
                 df.at[i, "ICP_Fit"]      = res["is_fit"]
                 df.at[i, "Company_Type"] = res["company_type"]
                 df.at[i, "AI_Note"]      = res["ai_note"]
-                report(i, len(df), "qualify")
+                report(i, len(df), "qualify",
+                       f"{row['Company']} → {res['is_fit']}")
                 if i % self.checkpoint_every == 0:
                     self._checkpoint(df, "qualify")
 
@@ -200,7 +211,9 @@ class Pipeline:
                                  "Match_Method": "not_found",
                                  "Lusha_Company": "", "Lusha_Domain": "",
                                  "Credit_Charged": "", "Needs_Review": True})
-                report(i, len(targets), "contacts")
+                _mail = found[0].get("email", "") if found else ""
+                report(i, len(targets), "contacts",
+                       f"{row['Company']} → {_mail or '(bulunamadı)'}")
                 if i % self.checkpoint_every == 0 and rows:
                     self._checkpoint(pd.DataFrame(rows), "contacts")
             df = pd.DataFrame(rows) if rows else df
@@ -291,7 +304,10 @@ class Pipeline:
                                  "Match_Method": "not_found",
                                  "Lusha_Company": "", "Lusha_Domain": "",
                                  "Credit_Charged": "", "Needs_Review": True})
-                report(i, len(target_list), "bulk_emails")
+                _n = len([c for c in found if c.get("email")])
+                report(i, len(target_list), "bulk_emails",
+                       f"{row['Company']} → {_n} e-posta" if _n
+                       else f"{row['Company']} → (bulunamadı)")
                 if i % self.checkpoint_every == 0 and rows:
                     self._checkpoint(pd.DataFrame(rows), "bulk_emails")
             if rows:
