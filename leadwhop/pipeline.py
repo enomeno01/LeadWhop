@@ -6,7 +6,6 @@ Usage:
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -254,85 +253,42 @@ class Pipeline:
                             "contact columns (Email, Title, Name).")
 
         if "bulk_emails" in stages:
+            rows = []
             targets = (df[df.get("ICP_Fit", "Yes") != "No"]
                        if "ICP_Fit" in df.columns else df)
-            target_list = list(targets.iterrows())
-            n_targets = len(target_list)
-
-            def _one_company(item):
-                """Search one company. Returns (position, output_rows).
-
-                Runs in a worker thread. Any failure is caught here so a single
-                company can never crash the pool — it just yields a not_found
-                row like the sequential version did.
-                """
-                pos, (_, row) = item
+            for i, (_, row) in enumerate(targets.iterrows()):
+                found = self.contacts.find_bulk(
+                    str(row["Company"]),
+                    str(row.get("Website", "")),
+                    str(row.get("Country", "")),
+                    target=bulk_target,
+                )
                 base = {k: v for k, v in row.to_dict().items()
                         if k not in ("Name", "Title", "Email", "LinkedIn",
                                      "Contact_Tier", "Match_Method",
                                      "Lusha_Company", "Lusha_Domain",
                                      "Credit_Charged")}
-                try:
-                    found = self.contacts.find_bulk(
-                        str(row["Company"]),
-                        str(row.get("Website", "")),
-                        str(row.get("Country", "")),
-                        target=bulk_target,
-                    )
-                except Exception as e:
-                    print(f"   ⚠️ {row.get('Company','?')} atlandı (hata): {e}")
-                    found = []
-
-                out = []
                 for c in found:
-                    out.append({**base,
-                                "Name":           c.get("name", ""),
-                                "Title":          c.get("title", ""),
-                                "Email":          c.get("email", ""),
-                                "LinkedIn":       c.get("linkedin", ""),
-                                "Contact_Tier":   c.get("tier", ""),
-                                "Match_Method":   c.get("match_method", ""),
-                                "Lusha_Company":  c.get("lusha_company", ""),
-                                "Lusha_Domain":   c.get("lusha_domain", ""),
-                                "Credit_Charged": c.get("credit_charged", ""),
-                                "Needs_Review":   bool(row.get("Needs_Review", False))})
+                    rows.append({**base,
+                                 "Name":           c.get("name", ""),
+                                 "Title":          c.get("title", ""),
+                                 "Email":          c.get("email", ""),
+                                 "LinkedIn":       c.get("linkedin", ""),
+                                 "Contact_Tier":   c.get("tier", ""),
+                                 "Match_Method":   c.get("match_method", ""),
+                                 "Lusha_Company":  c.get("lusha_company", ""),
+                                 "Lusha_Domain":   c.get("lusha_domain", ""),
+                                 "Credit_Charged": c.get("credit_charged", ""),
+                                 "Needs_Review":   bool(row.get("Needs_Review", False))})
                 if not found:
-                    out.append({**base, "Name": "", "Title": "", "Email": "",
-                                "LinkedIn": "", "Contact_Tier": "",
-                                "Match_Method": "not_found",
-                                "Lusha_Company": "", "Lusha_Domain": "",
-                                "Credit_Charged": "", "Needs_Review": True})
-                return pos, out
-
-            # Lusha's rate limit is much stricter than OpenAI's, so we use only
-            # a few workers. This still gives a solid speed-up over one-at-a-time
-            # without drowning the account in 429s. find_bulk's own credit-stop
-            # is per-company, so parallelism does NOT overshoot the target.
-            bulk_workers = 4
-            results_by_pos = {}
-            done = 0
-            with ThreadPoolExecutor(max_workers=bulk_workers) as ex:
-                futures = {ex.submit(_one_company, item): item[0]
-                           for item in enumerate(target_list)}
-                for fut in as_completed(futures):
-                    pos, out = fut.result()
-                    results_by_pos[pos] = out
-                    done += 1
-                    report(done - 1, n_targets, "bulk_emails")
-                    # Checkpoint from whatever has finished so far (order-safe).
-                    if done % self.checkpoint_every == 0:
-                        partial = []
-                        for k in sorted(results_by_pos):
-                            partial.extend(results_by_pos[k])
-                        if partial:
-                            self._checkpoint(pd.DataFrame(partial), "bulk_emails")
-
-            # Reassemble in the ORIGINAL company order (threads finish in any order)
-            rows = []
-            for k in sorted(results_by_pos):
-                rows.extend(results_by_pos[k])
-            if rows:
-                self._checkpoint(pd.DataFrame(rows), "bulk_emails")  # final save
+                    rows.append({**base, "Name": "", "Title": "", "Email": "",
+                                 "LinkedIn": "", "Contact_Tier": "",
+                                 "Match_Method": "not_found",
+                                 "Lusha_Company": "", "Lusha_Domain": "",
+                                 "Credit_Charged": "", "Needs_Review": True})
+                report(i, len(targets), "bulk_emails")
+                if i % self.checkpoint_every == 0 and rows:
+                    self._checkpoint(pd.DataFrame(rows), "bulk_emails")
             df = pd.DataFrame(rows) if rows else df
 
         if "mail" in stages:
