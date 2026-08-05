@@ -256,18 +256,23 @@ class Pipeline:
             rows = []
             targets = (df[df.get("ICP_Fit", "Yes") != "No"]
                        if "ICP_Fit" in df.columns else df)
-            for i, (_, row) in enumerate(targets.iterrows()):
-                found = self.contacts.find_bulk(
-                    str(row["Company"]),
-                    str(row.get("Website", "")),
-                    str(row.get("Country", "")),
-                    target=bulk_target,
-                )
+            target_list = list(targets.iterrows())
+            for i, (_, row) in enumerate(target_list):
                 base = {k: v for k, v in row.to_dict().items()
                         if k not in ("Name", "Title", "Email", "LinkedIn",
                                      "Contact_Tier", "Match_Method",
                                      "Lusha_Company", "Lusha_Domain",
                                      "Credit_Charged")}
+                try:
+                    found = self.contacts.find_bulk(
+                        str(row["Company"]),
+                        str(row.get("Website", "")),
+                        str(row.get("Country", "")),
+                        target=bulk_target,
+                    )
+                except Exception as e:
+                    print(f"   \u26a0\ufe0f {row.get('Company','?')} atlandi (hata): {e}")
+                    found = []
                 for c in found:
                     rows.append({**base,
                                  "Name":           c.get("name", ""),
@@ -286,9 +291,11 @@ class Pipeline:
                                  "Match_Method": "not_found",
                                  "Lusha_Company": "", "Lusha_Domain": "",
                                  "Credit_Charged": "", "Needs_Review": True})
-                report(i, len(targets), "bulk_emails")
+                report(i, len(target_list), "bulk_emails")
                 if i % self.checkpoint_every == 0 and rows:
                     self._checkpoint(pd.DataFrame(rows), "bulk_emails")
+            if rows:
+                self._checkpoint(pd.DataFrame(rows), "bulk_emails")
             df = pd.DataFrame(rows) if rows else df
 
         if "mail" in stages:
