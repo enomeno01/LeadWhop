@@ -233,12 +233,53 @@ if uploaded:
                 tmp.write(uploaded.getvalue())
                 tmp_path = tmp.name
 
+            def _offer_checkpoints(caption):
+                """Show download buttons for any checkpoint files on disk.
+
+                The pipeline writes checkpoint_<stage>.xlsx every few rows, so
+                even a run that dies halfway leaves recoverable work behind.
+                Without a button the user cannot reach those files at all.
+                """
+                import pathlib as _pl
+                out_dir = _pl.Path("outputs")
+                if not out_dir.exists():
+                    return
+                ckpts = sorted(out_dir.glob("checkpoint_*.xlsx"))
+                if not ckpts:
+                    return
+                st.markdown(f"**{caption}**")
+                cols = st.columns(min(len(ckpts), 4))
+                for col, f in zip(cols, ckpts):
+                    try:
+                        col.download_button(
+                            f"💾 {f.stem.replace('checkpoint_', '')}",
+                            f.read_bytes(), file_name=f.name,
+                            width="stretch", key=f"ckpt_{f.name}")
+                    except Exception:
+                        pass
+
             status   = st.empty()
             progress = st.progress(0.0)
 
-            def cb(stage, i, n):
+            # ── Live feed: shows each company as it is processed ──────────
+            st.markdown("##### 📡 Canlı akış")
+            live_box = st.empty()
+            _live_lines = []          # newest first, capped
+            _live_found = {"ok": 0}
+
+            def cb(stage, i, n, detail=None):
                 _, label, _ = stage_meta[stage]
-                progress.progress(i / n, text=f"**{label}** — {i} / {n}")
+                progress.progress(min(i / n, 1.0),
+                                  text=f"**{label}** — {i} / {n}")
+                if detail:
+                    if "(bulunamadı)" not in detail:
+                        _live_found["ok"] += 1
+                    _live_lines.insert(0, detail)
+                    del _live_lines[12:]          # keep the panel short
+                    live_box.markdown(
+                        f"**{i} / {n} işlendi · {_live_found['ok']} sonuç**\n\n"
+                        + "\n".join(f"- {ln}" for ln in _live_lines)
+                    )
 
             from leadwhop import status as lw_status
             lw_status.clear()
@@ -260,6 +301,7 @@ if uploaded:
                 st.error(f"Pipeline error: {exc}")
                 for w in lw_status.get_warnings():
                     st.error(f"🚨 {w}")
+                _offer_checkpoints("Koşu yarıda kaldı — o ana kadarki sonuçlar:")
                 st.stop()
 
             # API warnings (credits, auth, rate limits) — never silent
@@ -387,6 +429,11 @@ if uploaded:
                 col.download_button(
                     label, payload, file_name=fname, width="stretch",
                 )
+
+            with st.expander("💾 Ara kayıtlar (checkpoint)"):
+                st.caption("Koşu sırasında her birkaç satırda bir alınan "
+                           "yedekler — bir sorun olursa buradan kurtarılır.")
+                _offer_checkpoints("Mevcut ara kayıtlar:")
 
             # ── Preview tables ───────────────────────────────────────────
             st.markdown("### Results")
