@@ -328,9 +328,16 @@ def _rank_people_by_fit(llm, people: list[dict]) -> list[dict]:
 
 
 class ContactFinder:
-    def __init__(self, tiers: list[dict], settings: dict, llm=None):
+    def __init__(self, tiers: list[dict], settings: dict, llm=None,
+                 qualifier=None):
         self.tiers = tiers
         self.llm = llm
+        # Used to verify companies found by NAME search (not domain search).
+        # A name search can return a same-named but unrelated business, so the
+        # company Lusha returned is re-checked against the ICP using its own
+        # domain before any credit is spent on revealing an email.
+        self.qualifier = qualifier
+        self._verify_cache: dict[str, bool] = {}
         self.headers = {
             "accept": "application/json",
             "content-type": "application/json",
@@ -341,6 +348,48 @@ class ContactFinder:
         self.max_contacts   = settings["pipeline"]["max_contacts_per_company"]
         self.country_tlds   = {str(k).lower(): str(v)
                                for k, v in (settings.get("country_tlds") or {}).items()}
+
+    def _verify_name_match(self, wanted_company: str, person: dict,
+                           country: str = "") -> bool:
+        """Is the company Lusha returned really the company we asked for?
+
+        Only used for NAME searches. Runs the Stage-2 qualifier against the
+        DOMAIN Lusha returned: the model sees that company's real products and
+        decides whether it fits the ICP. This replaces fuzzy string matching,
+        which cannot tell "Hero España" (jams) from "Hero MotoCorp"
+        (motorcycles) — the names are nearly identical, the businesses are not.
+
+        Costs no Lusha credits: the check is a Serper search plus one GPT call.
+        Cached per domain so repeated tiers don't re-ask.
+        """
+        if self.qualifier is None:
+            return True                      # no qualifier wired: don't block
+
+        lusha_domain = _get_domain(person)
+        if not lusha_domain or lusha_domain == "-":
+            return True                      # nothing to verify against
+
+        if lusha_domain in self._verify_cache:
+            return self._verify_cache[lusha_domain]
+
+        lusha_company = _get_company_name(person)
+        try:
+            verdict = self.qualifier.qualify(
+                lusha_company if lusha_company != "-" else wanted_company,
+                country, lusha_domain)
+            ok = str(verdict.get("is_fit", "")).strip().lower() == "yes"
+            note = str(verdict.get("ai_note", ""))[:70]
+        except Exception as exc:
+            print(f"    ⚠️ Doğrulama yapılamadı ({exc}) — kişi alınıyor")
+            ok = True
+            note = ""
+
+        self._verify_cache[lusha_domain] = ok
+        if ok:
+            print(f"    ✅ Doğrulandı: {lusha_domain} — {note}")
+        else:
+            print(f"    ⛔ ICP dışı, şirket atlanıyor: {lusha_domain} — {note}")
+        return ok
 
     def find_bulk(self, company: str, website: str = "", country: str = "",
                   target: int = 10, max_pages: int = 5) -> list[dict]:
@@ -394,6 +443,16 @@ class ContactFinder:
 
                 people = _rank_people_by_fit(self.llm, people)
 
+                # NAME search: verify the company BEFORE spending any credit.
+                # Tier keywords already filtered the titles, so reaching here
+                # means a relevant person exists — now check the company fits.
+                if method == "name_filter":
+                    if not self._verify_name_match(company, people[0], country):
+                        break            # wrong / non-ICP company: skip it
+                    method_note = "name_filter_verified"
+                else:
+                    method_note = method
+
                 for person in people:
                     if len(found) >= target:
                         break
@@ -403,12 +462,6 @@ class ContactFinder:
                     seen_ids.add(pid)
 
                     lusha_company = _get_company_name(person)
-                    if (method == "name_filter"
-                            and top_company_name and top_company_name != "-"
-                            and lusha_company != "-"
-                            and not _company_match(top_company_name, lusha_company)):
-                        print(f"    ⛔ Rejected (company mismatch): {lusha_company}")
-                        continue
 
                     name  = _get_name(person)
                     title = _get_title(person)
@@ -423,7 +476,7 @@ class ContactFinder:
                         found.append({
                             "name": name, "title": title, "email": email,
                             "linkedin": linkedin, "tier": tier["name"],
-                            "match_method": method,
+                            "match_method": method_note,
                             "lusha_company": lusha_company,
                             "lusha_domain": _get_domain(person),
                             "credit_charged": charged,
@@ -479,6 +532,15 @@ class ContactFinder:
             # original Lusha order when no model is available.
             people = _rank_people_by_fit(self.llm, people)
 
+            # NAME search: verify the company BEFORE spending a credit.
+            # Domain search needs no check — Lusha matched the exact domain.
+            if method == "name_filter":
+                if not self._verify_name_match(company, people[0], country):
+                    print("    ⏭️ Şirket doğrulanamadı — atlanıyor")
+                    time.sleep(SLEEP_BETWEEN_TIERS)
+                    continue
+                method = "name_filter_verified"
+
             added = 0
             for person in people:
                 if added >= self.max_contacts:
@@ -490,15 +552,6 @@ class ContactFinder:
                 seen_ids.add(pid)
 
                 lusha_company = _get_company_name(person)
-
-                # ── company match guard (name-search only really needs this) ─
-                if (method == "name_filter"
-                        and top_company_name and top_company_name != "-"
-                        and lusha_company != "-"):
-                    if not _company_match(top_company_name, lusha_company):
-                        print(f"    ⛔ Rejected (company mismatch): "
-                              f"{top_company_name} ≠ {lusha_company}")
-                        continue
 
                 name   = _get_name(person)
                 title  = _get_title(person)
