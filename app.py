@@ -233,31 +233,6 @@ if uploaded:
                 tmp.write(uploaded.getvalue())
                 tmp_path = tmp.name
 
-            def _offer_checkpoints(caption):
-                """Show download buttons for any checkpoint files on disk.
-
-                The pipeline writes checkpoint_<stage>.xlsx every few rows, so
-                even a run that dies halfway leaves recoverable work behind.
-                Without a button the user cannot reach those files at all.
-                """
-                import pathlib as _pl
-                out_dir = _pl.Path("outputs")
-                if not out_dir.exists():
-                    return
-                ckpts = sorted(out_dir.glob("checkpoint_*.xlsx"))
-                if not ckpts:
-                    return
-                st.markdown(f"**{caption}**")
-                cols = st.columns(min(len(ckpts), 4))
-                for col, f in zip(cols, ckpts):
-                    try:
-                        col.download_button(
-                            f"💾 {f.stem.replace('checkpoint_', '')}",
-                            f.read_bytes(), file_name=f.name,
-                            width="stretch", key=f"ckpt_{f.name}")
-                    except Exception:
-                        pass
-
             status   = st.empty()
             progress = st.progress(0.0)
 
@@ -301,7 +276,6 @@ if uploaded:
                 st.error(f"Pipeline error: {exc}")
                 for w in lw_status.get_warnings():
                     st.error(f"🚨 {w}")
-                _offer_checkpoints("Koşu yarıda kaldı — o ana kadarki sonuçlar:")
                 st.stop()
 
             # API warnings (credits, auth, rate limits) — never silent
@@ -429,11 +403,6 @@ if uploaded:
                 col.download_button(
                     label, payload, file_name=fname, width="stretch",
                 )
-
-            with st.expander("💾 Ara kayıtlar (checkpoint)"):
-                st.caption("Koşu sırasında her birkaç satırda bir alınan "
-                           "yedekler — bir sorun olursa buradan kurtarılır.")
-                _offer_checkpoints("Mevcut ara kayıtlar:")
 
             # ── Preview tables ───────────────────────────────────────────
             st.markdown("### Results")
